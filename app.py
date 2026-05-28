@@ -75,7 +75,7 @@ st.markdown("""
         color: #1e3a8a;
     }
     
-    /* Destakes de Frases */
+    /* Destaques de Frases */
     .corrected-text {
         font-family: 'Outfit', monospace;
         font-size: 1.2rem;
@@ -120,9 +120,9 @@ st.sidebar.markdown("""
 st.sidebar.markdown("""
 ### 💡 Como Usar:
 1. Digite uma frase em **inglês** no campo de texto principal.
-2. (Opcional) Digite uma **Palavra-Chave** (ex: *always*, *although*, *break down*) que deseja praticar.
+2. (Opcional) Se tiver alguma dúvida teórica ou gramatical sobre o contexto da frase, escreva no campo **"Pesquisa de dúvidas"** em português.
 3. Clique em **Verificar Frase**!
-4. O Gemini analisará sua escrita e fornecerá explicações e exemplos interativos.
+4. O Gemini analisará sua escrita, corrigirá possíveis erros e responderá a sua dúvida teórica de forma didática.
 """)
 
 # ------------------------------------------------------------------------------
@@ -131,7 +131,7 @@ st.sidebar.markdown("""
 
 # Título Principal do App
 st.markdown('<div class="header-container"><h1>English Practice App</h1></div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">Pratique a escrita de frases em inglês no contexto certo com auxílio do Gemini 1.5 Flash</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Pratique a escrita de frases em inglês no contexto certo com auxílio do Gemini</div>', unsafe_allow_html=True)
 
 # Container para os inputs do usuário
 with st.container():
@@ -141,10 +141,10 @@ with st.container():
         help="Escreva qualquer frase que queira avaliar gramaticalmente"
     )
     
-    keyword = st.text_input(
-        "🔑 Palavra-Chave para praticar (Opcional):",
-        placeholder="Ex: always, since, look forward to",
-        help="Se informado, o Gemini avaliará se você usou esta palavra corretamente na frase acima."
+    doubt = st.text_input(
+        "🔍 Pesquisa de dúvidas (Opcional):",
+        placeholder="Ex: Por que não posso usar a palavra X aqui? / Qual a diferença entre X e Y nesse contexto?",
+        help="Digite sua dúvida teórica ou gramatical em português sobre o contexto da frase ou regras gerais."
     )
 
     submit_button = st.button("🔍 Verificar Frase", use_container_width=True)
@@ -152,9 +152,9 @@ with st.container():
 # ------------------------------------------------------------------------------
 # INTEGRAÇÃO COM A API DO GEMINI
 # ------------------------------------------------------------------------------
-def analyze_sentence(user_sentence, user_keyword):
+def analyze_sentence(user_sentence, user_doubt):
     """
-    Chama a API do Gemini 1.5 Flash passando a frase e palavra-chave.
+    Chama a API do Gemini passando a frase e a dúvida teórica.
     Retorna a resposta estruturada em JSON.
     """
     # Prompt do Sistema
@@ -164,7 +164,17 @@ def analyze_sentence(user_sentence, user_keyword):
     Você deve avaliar a frase de acordo com:
     1. Correção gramatical geral.
     2. Fluidez, naturalidade e escolha de palavras (lexicologia).
-    3. Se uma palavra-chave for fornecida, valide detalhadamente se ela foi empregada de forma adequada, natural e correta.
+    
+    INSTRUÇÃO CENTRAL PARA O CAMPO DE DÚVIDA:
+    Se o usuário preencher o campo "Pesquisa de dúvidas" com uma dúvida contextual, gramatical ou teórica (em português), você deve atuar como um suporte explicativo dedicado. Responda diretamente e de forma extremamente didática a essa dúvida no campo "doubt_explanation" do JSON, baseando sua explicação diretamente no contexto da frase informada (se houver). Quando este campo contiver texto, NÃO use a informação para fazer um teste de palavras-chave, mas sim para responder teoricamente à dúvida dele. Se não houver nenhuma dúvida informada, retorne null em "doubt_explanation".
+    
+    CASO DE AUSÊNCIA DE FRASE:
+    Se o usuário não fornecer uma frase em inglês (ou seja, enviar uma string vazia ou sem valor), foque inteiramente em responder à dúvida teórica/gramatical enviada no campo "doubt_explanation" de forma completa, didática e clara. Nesse caso, preencha os outros campos da seguinte forma:
+    - "is_correct": true
+    - "translation": null
+    - "corrected_sentence": null
+    - "explanation": "Nenhuma frase foi enviada para análise."
+    - "alternative_suggestions": []
     
     Você DEVE retornar a resposta estritamente no seguinte formato JSON, sem qualquer outro texto adicional antes ou depois. Não utilize blocos de código markdown adicionais como ```json se possível, ou retorne apenas o JSON bruto válido.
     
@@ -174,17 +184,15 @@ def analyze_sentence(user_sentence, user_keyword):
       "translation": "tradução exata da frase fornecida pelo usuário para o português brasileiro",
       "corrected_sentence": "a frase corrigida se houver qualquer erro (gramatical, ortográfico ou de pontuação), ou null se a frase estiver 100% correta",
       "explanation": "explicação curta e pedagógica (em português) sobre os erros cometidos, ou elogios e observações didáticas caso a frase esteja correta",
-      "keyword_valid": boolean ou null, // se uma palavra-chave foi fornecida, true se foi usada corretamente, false se usada incorretamente. Se nenhuma palavra-chave foi fornecida, retorne null
-      "keyword_explanation": "explicação (em português) do porquê a palavra-chave foi usada corretamente ou incorretamente na frase, ou null se não houver palavra-chave",
-      "alternative_suggestions": ["sugestão alternativa 1", "sugestão alternativa 2"], // 2 a 3 formas naturais e comuns de expressar a mesma ideia em inglês
-      "examples": ["exemplo 1", "exemplo 2", "exemplo 3"] // se uma palavra-chave foi fornecida, 3 frases curtas e práticas de exemplo em inglês usando essa mesma palavra-chave. Cada frase de exemplo DEVE ser acompanhada de sua tradução em português entre parênteses, no formato: 'Frase em Inglês (Frase em Português)'. Se não houver palavra-chave, forneça um array vazio []
+      "doubt_explanation": "resposta detalhada e didática em português para a dúvida informada no campo de 'Pesquisa de dúvidas'. Se não houver dúvida, retorne null",
+      "alternative_suggestions": ["sugestão alternativa 1", "sugestão alternativa 2"] // 2 a 3 formas naturais e comuns de expressar a mesma ideia em inglês
     }
     """
     
     # Prompt do usuário
     user_prompt = f"Frase do Usuário: '{user_sentence}'"
-    if user_keyword and user_keyword.strip() != "":
-        user_prompt += f"\nPalavra-Chave desejada: '{user_keyword.strip()}'"
+    if user_doubt and user_doubt.strip() != "":
+        user_prompt += f"\nDúvida/Pesquisa enviada pelo usuário (em português): '{user_doubt.strip()}'"
         
     model = genai.GenerativeModel(
         model_name='gemini-flash-latest',
@@ -202,13 +210,16 @@ def analyze_sentence(user_sentence, user_keyword):
 # FLUXO DE SUBMISSÃO E RESULTADO
 # ------------------------------------------------------------------------------
 if submit_button:
-    if not sentence or sentence.strip() == "":
-        st.warning("⚠️ Por favor, digite uma frase em inglês antes de clicar em verificar.")
+    has_sentence = sentence and sentence.strip() != ""
+    has_doubt = doubt and doubt.strip() != ""
+    
+    if not has_sentence and not has_doubt:
+        st.warning("⚠️ Por favor, digite uma frase em inglês ou uma dúvida antes de clicar em verificar.")
     else:
-        with st.spinner("🧠 O Gemini está analisando sua frase... Aguarde um momento!"):
+        with st.spinner("🧠 O Gemini está analisando sua solicitação... Aguarde um momento!"):
             try:
                 # Realiza a análise
-                raw_response = analyze_sentence(sentence, keyword)
+                raw_response = analyze_sentence(sentence, doubt)
                 
                 # Faz o parse da resposta JSON
                 response_data = json.loads(raw_response)
@@ -216,93 +227,67 @@ if submit_button:
                 st.markdown("---")
                 st.markdown("### 📊 Resultado da Análise")
                 
-                # 1. AVALIAÇÃO GRAMATICAL
-                st.markdown("#### 📝 Avaliação Gramatical")
-                
-                is_correct = response_data.get("is_correct", False)
-                corrected = response_data.get("corrected_sentence")
-                explanation = response_data.get("explanation", "")
-                
-                if is_correct:
-                    st.markdown(f"""
-                    <div class="card-correct">
-                        <h4 style="margin:0; font-family:'Outfit';">🎉 Muito bem! Sua frase está gramaticalmente correta!</h4>
-                        <p style="margin-top:0.5rem; margin-bottom:0;">{explanation}</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                else:
-                    corrected_html = f'<div class="corrected-text">👉 "{corrected}"</div>' if corrected else ""
-                    st.markdown(f"""
-                    <div class="card-incorrect">
-                        <h4 style="margin:0; font-family:'Outfit';">⚠️ Encontramos pontos de melhoria na sua frase:</h4>
-                        {corrected_html}
-                        <p style="margin-top:0.5rem; margin-bottom:0;"><strong>Explicação:</strong> {explanation}</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                # Validação da Palavra-Chave (Se fornecida)
-                keyword_valid = response_data.get("keyword_valid")
-                keyword_explanation = response_data.get("keyword_explanation")
-                
-                if keyword and keyword.strip() != "" and keyword_valid is not None:
-                    st.markdown("#### 🔑 Análise da Palavra-Chave")
-                    if keyword_valid:
+                # 1. AVALIAÇÃO GRAMATICAL (Apenas se tiver enviado uma frase)
+                if has_sentence:
+                    st.markdown("#### 📝 Avaliação Gramatical")
+                    
+                    is_correct = response_data.get("is_correct", False)
+                    corrected = response_data.get("corrected_sentence")
+                    explanation = response_data.get("explanation", "")
+                    
+                    if is_correct:
                         st.markdown(f"""
-                        <div class="card-correct" style="border-left-color: #06b6d4;">
-                            <h4 style="margin:0; font-family:'Outfit';">🎯 Palavra-chave '{keyword}' aplicada com sucesso!</h4>
-                            <p style="margin-top:0.5rem; margin-bottom:0;">{keyword_explanation}</p>
+                        <div class="card-correct">
+                            <h4 style="margin:0; font-family:'Outfit';">🎉 Muito bem! Sua frase está gramaticalmente correta!</h4>
+                            <p style="margin-top:0.5rem; margin-bottom:0;">{explanation}</p>
                         </div>
                         """, unsafe_allow_html=True)
                     else:
+                        corrected_html = f'<div class="corrected-text">👉 "{corrected}"</div>' if corrected else ""
                         st.markdown(f"""
-                        <div class="card-incorrect" style="border-left-color: #f59e0b; background-color: #fffbeb; border-color: #fef3c7; color: #b45309;">
-                            <h4 style="margin:0; font-family:'Outfit';">⚠️ Ajuste necessário para a palavra-chave '{keyword}':</h4>
-                            <p style="margin-top:0.5rem; margin-bottom:0;">{keyword_explanation}</p>
+                        <div class="card-incorrect">
+                            <h4 style="margin:0; font-family:'Outfit';">⚠️ Encontramos pontos de melhoria na sua frase:</h4>
+                            {corrected_html}
+                            <p style="margin-top:0.5rem; margin-bottom:0;"><strong>Explicação:</strong> {explanation}</p>
                         </div>
                         """, unsafe_allow_html=True)
                 
-                # 2. SUGESTÕES ALTERNATIVAS & EXEMPLOS
-                st.markdown("#### 💡 Sugestões Alternativas")
-                alternatives = response_data.get("alternative_suggestions", [])
+                # Resposta à Dúvida do Usuário (Se houver)
+                doubt_explanation = response_data.get("doubt_explanation")
                 
-                if alternatives:
-                    cols = st.columns(len(alternatives))
-                    for i, alt in enumerate(alternatives):
-                        with cols[i]:
-                            st.info(f"💡 **Forma {i+1}:**\n\n_{alt}_")
-                else:
-                    st.write("Sem sugestões alternativas para esta frase.")
-                
-                # Exibição de frases de exemplo com a Palavra-Chave
-                examples = response_data.get("examples", [])
-                if keyword and keyword.strip() != "" and examples:
-                    st.markdown(f"#### 📚 Pratique mais: Frases de Exemplo com '{keyword}'")
-                    for ex in examples:
-                        # Se contiver a tradução nos parênteses, estiliza ela
-                        if "(" in ex and ex.endswith(")"):
-                            parts = ex.split(" (", 1)
-                            english_part = parts[0]
-                            portuguese_part = parts[1].rstrip(")")
-                            st.markdown(f"""
-                            <div style="background-color: #f8fafc; border-left: 3px solid #6366f1; padding: 0.8rem 1.2rem; border-radius: 6px; margin-bottom: 0.5rem;">
-                                <span style="font-weight: 600; color: #4f46e5;">{english_part}</span><br>
-                                <span style="color: #64748b; font-size: 0.9rem; font-style: italic;">{portuguese_part}</span>
-                            </div>
-                            """, unsafe_allow_html=True)
-                        else:
-                            st.markdown(f"- {ex}")
-                
-                # 3. TRADUÇÃO (OCULTA POR PADRÃO)
-                st.markdown("#### 🌐 Tradução da Frase")
-                translation = response_data.get("translation", "")
-                
-                with st.expander("👁️ Revelar Tradução para o Português"):
+                if has_doubt and doubt_explanation:
+                    st.markdown("#### 💡 Resposta à sua Dúvida")
                     st.markdown(f"""
-                    <div style="background-color: #fafafa; border: 1px dashed #d1d5db; border-radius: 8px; padding: 1rem; text-align: center;">
-                        <h4 style="margin: 0; font-family: 'Outfit', sans-serif; color: #374151;">Tradução aproximada:</h4>
-                        <p style="margin-top: 0.5rem; font-size: 1.15rem; font-weight: 500; color: #111827;">"{translation}"</p>
+                    <div class="card-info" style="border-left-color: #6366f1; background-color: #f5f3ff; border-color: #ddd6fe; color: #4338ca;">
+                        <h4 style="margin:0; font-family:'Outfit';">🧠 Explicação Teórica & Contextual:</h4>
+                        <p style="margin-top:0.5rem; margin-bottom:0;">{doubt_explanation}</p>
                     </div>
                     """, unsafe_allow_html=True)
+                
+                # 2. SUGESTÕES ALTERNATIVAS (Apenas se tiver enviado uma frase)
+                if has_sentence:
+                    st.markdown("#### 💡 Sugestões Alternativas")
+                    alternatives = response_data.get("alternative_suggestions", [])
+                    
+                    if alternatives:
+                        cols = st.columns(len(alternatives))
+                        for i, alt in enumerate(alternatives):
+                            with cols[i]:
+                                st.info(f"💡 **Forma {i+1}:**\n\n_{alt}_")
+                    else:
+                        st.write("Sem sugestões alternativas para esta frase.")
+                    
+                    # 3. TRADUÇÃO (OCULTA POR PADRÃO) (Apenas se tiver enviado uma frase)
+                    st.markdown("#### 🌐 Tradução da Frase")
+                    translation = response_data.get("translation", "")
+                    
+                    with st.expander("👁️ Revelar Tradução para o Português"):
+                        st.markdown(f"""
+                        <div style="background-color: #fafafa; border: 1px dashed #d1d5db; border-radius: 8px; padding: 1rem; text-align: center;">
+                            <h4 style="margin: 0; font-family: 'Outfit', sans-serif; color: #374151;">Tradução aproximada:</h4>
+                            <p style="margin-top: 0.5rem; font-size: 1.15rem; font-weight: 500; color: #111827;">"{translation}"</p>
+                        </div>
+                        """, unsafe_allow_html=True)
                     
             except json.JSONDecodeError:
                 st.error("💥 Erro ao processar a resposta do Gemini. O modelo não gerou um JSON válido.")
