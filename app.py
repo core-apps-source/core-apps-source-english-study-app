@@ -82,7 +82,7 @@ st.markdown("""
         border-left: 5px solid #a855f7;
         border-radius: 12px;
         padding: 1.25rem;
-        margin-bottom: 1rem;
+        margin-bottom: 0.5rem;
         color: #581c87;
         font-size: 1.1rem;
         font-weight: 500;
@@ -176,10 +176,10 @@ if active_page == "📝 Praticar Escrita & Dúvidas":
 else:
     st.sidebar.markdown("""
     ### 💡 Como Usar:
-    1. Escolha o idioma final das frases (Português ou Inglês).
-    2. Digite suas palavras (substantivos, adjetivos, verbos) separadas por espaço ou vírgula.
-    3. Clique em **⚡ Gerar Frases**.
-    4. O Gemini criará de 3 a 5 frases estritamente usando seus termos com conectivos básicos de suporte.
+    1. Digite suas palavras em **inglês** (substantivos, adjetivos, verbos) separadas por espaço ou vírgula.
+    2. Clique em **⚡ Gerar Frases**.
+    3. O Gemini criará de 3 a 5 frases em inglês utilizando estritamente os seus termos.
+    4. Clique no botão de revelação para ver a tradução em português de cada frase!
     """)
 
 st.sidebar.markdown("""
@@ -196,7 +196,7 @@ if 'last_words' not in st.session_state:
     st.session_state.last_words = ""
 
 # ------------------------------------------------------------------------------
-# FUNÇÕES DA API DO GEMINI (Utilizando o modelo ativo com cotas zeradas: gemini-2.5-flash)
+# FUNÇÕES DA API DO GEMINI
 # ------------------------------------------------------------------------------
 def analyze_sentence(user_sentence, user_doubt):
     """
@@ -250,31 +250,37 @@ def analyze_sentence(user_sentence, user_doubt):
     return response.text
 
 
-def generate_phrases_api(words_list, target_lang):
+def generate_phrases_api(words_list):
     """
-    Chama a API do Gemini para misturar as palavras em sentenças sob restrição estrita.
+    Chama a API do Gemini para misturar as palavras em sentenças em inglês sob restrição estrita,
+    retornando também as traduções correspondentes.
     """
-    system_prompt = f"""
-    Você é um gerador linguístico estrito e preciso.
-    Sua tarefa é ler uma lista de palavras fornecidas e gerar aleatoriamente entre 3 e 5 frases naturais em {target_lang} misturando e usando essas palavras.
+    system_prompt = """
+    Você é um gerador linguístico estrito e preciso de sentenças em inglês.
+    Sua tarefa é ler uma lista de palavras fornecidas e gerar aleatoriamente entre 3 e 5 frases naturais em inglês misturando e usando essas palavras.
     
     RESTRIÇÃO GRAMATICAL ESTRITA E CRÍTICA:
-    Você SÓ pode utilizar as palavras que o usuário enviou. A única exceção permitida para ligar ou dar sentido à frase é a adição de complementos gramaticais curtos (como artigos, preposições, conjunções, pronomes, verbos de ligação clássicos e verbos de ação simples). 
+    Você SÓ pode utilizar as palavras em inglês que o usuário enviou. A única exceção permitida para ligar ou dar sentido à frase é a adição de complementos gramaticais curtos em inglês (como artigos, preposições, conjunções, pronomes, verbos de ligação clássicos e verbos de ação simples). 
     NENHUM outro substantivo, adjetivo ou advérbio adicional pode ser incluído de forma alguma! Todas as palavras conceituais principais das frases devem vir exclusivamente da lista do usuário.
     
-    Exemplo de entrada: "sol, praia, caminhar, feliz"
-    Exemplo de frase correta: "Eu posso caminhar feliz na praia sob o sol."
-    Exemplo incorreto: "Meu amigo caminha feliz na praia." (ERRADO: "amigo" não estava na entrada)
+    Exemplo de entrada: "sun, beach, walk, happy"
+    Exemplo de frase correta: "I can walk happy on the beach under the sun."
+    Exemplo incorreto: "My friend walks happy on the beach." (ERRADO: "friend" não estava na entrada)
     
     Você DEVE retornar a resposta estritamente no seguinte formato JSON, sem qualquer outro texto adicional antes ou depois. Não utilize blocos de código markdown adicionais como ```json se possível, ou retorne apenas o JSON bruto válido.
     
     Estrutura JSON esperada:
-    {{
-      "sentences": ["Frase 1", "Frase 2", "Frase 3"]
-    }}
+    {
+      "results": [
+        {
+          "sentence": "Frase em inglês gerada",
+          "translation": "Tradução correspondente em português brasileiro"
+        }
+      ]
+    }
     """
     
-    user_prompt = f"Gere frases misturando as seguintes palavras do usuário: '{words_list}'"
+    user_prompt = f"Gere frases em inglês misturando as seguintes palavras do usuário: '{words_list}'"
     
     model = genai.GenerativeModel(
         model_name='gemini-2.5-flash',
@@ -392,15 +398,13 @@ if active_page == "📝 Praticar Escrita & Dúvidas":
 # ------------------------------------------------------------------------------
 else:
     st.markdown('<div class="header-container"><h1>Gerador de Frases Rígido</h1></div>', unsafe_allow_html=True)
-    st.markdown('<div class="subtitle">Crie frases válidas usando exclusivamente seus termos combinados pela inteligência artificial do Gemini</div>', unsafe_allow_html=True)
+    st.markdown('<div class="subtitle">Misture suas próprias palavras em inglês e veja a tradução correspondente com auxílio da IA</div>', unsafe_allow_html=True)
     
     with st.container():
-        language = st.radio("🌐 Idioma das frases geradas:", ["Português", "English"], horizontal=True)
-        
         words_input = st.text_area(
-            "✍️ Digite suas palavras (separadas por espaço ou vírgula):",
-            placeholder="Ex: sol, praia, calor, caminhar, feliz, hoje",
-            help="Digite as palavras conceituais principais. O Gemini criará as sentenças misturando elas."
+            "✍️ Digite suas palavras em inglês (separadas por espaço ou vírgula):",
+            placeholder="Ex: sun, beach, warm, walk, happy, today",
+            help="Digite as palavras conceituais principais em inglês. O Gemini criará as sentenças misturando elas."
         )
         
         col_gen, col_clear = st.columns(2)
@@ -422,13 +426,13 @@ else:
             words_list = [w.strip() for w in words_input.split(" ") if w.strip() != ""]
             
         if len(words_list) < 3:
-            st.warning("⚠️ Por favor, digite pelo menos 3 palavras para gerar as sentenças de forma criativa.")
+            st.warning("⚠️ Por favor, digite pelo menos 3 palavras em inglês para gerar as sentenças de forma criativa.")
         else:
             with st.spinner("🧠 O Gemini está analisando seus termos e construindo as frases..."):
                 try:
-                    raw_response = generate_phrases_api(", ".join(words_list), language)
+                    raw_response = generate_phrases_api(", ".join(words_list))
                     response_data = json.loads(raw_response)
-                    st.session_state.generated_sentences = response_data.get("sentences", [])
+                    st.session_state.generated_sentences = response_data.get("results", [])
                     st.session_state.last_words = words_input
                 except Exception as e:
                     handle_api_error(e)
@@ -436,24 +440,35 @@ else:
     # Exibição de Resultados
     if st.session_state.generated_sentences:
         st.markdown("---")
-        st.markdown("### 📊 Frases Geradas")
+        st.markdown("### 📊 Frases Geradas em Inglês")
         
-        for idx, sentence in enumerate(st.session_state.generated_sentences):
+        for idx, item in enumerate(st.session_state.generated_sentences):
+            english_sentence = item.get("sentence", "")
+            portuguese_translation = item.get("translation", "")
+            
             st.markdown(f"""
             <div class="card-sentence">
                 <span style="font-size:0.85rem; font-weight:700; color:#a855f7; display:block; margin-bottom:0.25rem;">FRASE {idx+1}</span>
-                "{sentence}"
+                "{english_sentence}"
             </div>
             """, unsafe_allow_html=True)
+            
+            # Botão de revelação da tradução via expander
+            with st.expander(f"👁️ Revelar Tradução da Frase {idx+1}"):
+                st.markdown(f"""
+                <div style="background-color: #fafafa; border: 1px dashed #d1d5db; border-radius: 8px; padding: 0.85rem; text-align: center;">
+                    <p style="margin: 0; font-size: 1.05rem; font-weight: 500; color: #1f2937;">"{portuguese_translation}"</p>
+                </div>
+                """, unsafe_allow_html=True)
             
         st.markdown("---")
         # Botão secundário de Regerar / Embaralhar
         if st.button("🔄 Gerar Novas Frases (Embaralhar)", use_container_width=True):
-            with st.spinner("🧠 O Gemini está criando novas combinações de frases..."):
+            with st.spinner("🧠 O Gemini está criando novas combinações de frases em inglês..."):
                 try:
-                    raw_response = generate_phrases_api(st.session_state.last_words, language)
+                    raw_response = generate_phrases_api(st.session_state.last_words)
                     response_data = json.loads(raw_response)
-                    st.session_state.generated_sentences = response_data.get("sentences", [])
+                    st.session_state.generated_sentences = response_data.get("results", [])
                     st.rerun()
                 except Exception as e:
                     handle_api_error(e)
