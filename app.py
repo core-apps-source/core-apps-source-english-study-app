@@ -238,7 +238,7 @@ def analyze_sentence(user_sentence, user_doubt):
         user_prompt += f"\nDúvida/Pesquisa enviada pelo usuário (em português): '{user_doubt.strip()}'"
         
     model = genai.GenerativeModel(
-        model_name='gemini-2.5-flash',
+        model_name='gemini-2.5-flash-lite',
         system_instruction=system_prompt,
         generation_config={
             "response_mime_type": "application/json",
@@ -283,7 +283,7 @@ def generate_phrases_api(words_list):
     user_prompt = f"Gere frases em inglês misturando as seguintes palavras do usuário: '{words_list}'"
     
     model = genai.GenerativeModel(
-        model_name='gemini-2.5-flash',
+        model_name='gemini-2.5-flash-lite',
         system_instruction=system_prompt,
         generation_config={
             "response_mime_type": "application/json",
