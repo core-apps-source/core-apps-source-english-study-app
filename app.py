@@ -556,7 +556,7 @@ else:
         for v in history_verbs:
             if st.sidebar.button(v.capitalize(), key=f"hist_btn_{v}", use_container_width=True):
                 st.session_state.selected_verb = v
-                st.session_state.verb_input_field = v
+                st.session_state.verb_input_widget = v
                 st.session_state.should_generate = True
                 st.rerun()
     else:
@@ -915,17 +915,58 @@ else:
     tab_tables, tab_quiz = st.tabs(["📚 Tabelas de Conjugação", "🎮 Quiz de Conjugação"])
     
     with tab_tables:
+        # 1. Definição dos callbacks que rodam ANTES da renderização
+        def callback_translate_verb():
+            pt_val = st.session_state.get("pt_verb_input", "").strip()
+            if pt_val:
+                try:
+                    current_key = get_api_key()
+                    if not current_key:
+                        st.session_state.translate_error = "⚠️ Insira sua Gemini API Key na barra lateral primeiro para habilitar a tradução!"
+                    else:
+                        import google.generativeai as genai
+                        genai.configure(api_key=current_key)
+                        prompt = f"Traduza o verbo em português '{pt_val}' para o inglês no infinitivo sem o 'to'. Retorne APENAS a palavra em inglês minúscula, sem pontuação ou comentários."
+                        model = genai.GenerativeModel('gemini-2.5-flash')
+                        response = model.generate_content(prompt)
+                        en_verb = response.text.strip().lower()
+                        
+                        st.session_state.selected_verb = en_verb
+                        st.session_state.verb_input_widget = en_verb
+                        st.session_state.translate_success = f"🎉 Traduzido! '{pt_val}' em inglês é '{en_verb}'."
+                except Exception as e:
+                    st.session_state.translate_error = f"Erro na tradução: {e}"
+
+        def callback_select_common_verb():
+            val = st.session_state.get("common_verbs_select", "-- Selecione --")
+            if val and val != "-- Selecione --":
+                st.session_state.selected_verb = val
+                st.session_state.verb_input_widget = val
+
+        # 2. Exibição de alertas persistidos de reruns
+        if "translate_success" in st.session_state and st.session_state.translate_success:
+            st.success(st.session_state.translate_success)
+            st.session_state.translate_success = None
+        if "translate_error" in st.session_state and st.session_state.translate_error:
+            st.error(st.session_state.translate_error)
+            st.session_state.translate_error = None
+            
         col_verb, col_person = st.columns(2)
         
         with col_verb:
-            # Garante que a chave existe no session_state
-            if "verb_input_field" not in st.session_state:
-                st.session_state.verb_input_field = st.session_state.selected_verb
+            if "selected_verb" not in st.session_state:
+                st.session_state.selected_verb = ""
+                
+            # Sincroniza o valor digitado de forma a evitar StreamlitStateError
+            def sync_selected_verb():
+                st.session_state.selected_verb = st.session_state.verb_input_widget
                 
             verb = st.text_input(
                 "Digite o verbo em inglês:",
+                value=st.session_state.selected_verb,
                 placeholder="Ex: speak, write, run, go",
-                key="verb_input_field",
+                key="verb_input_widget",
+                on_change=sync_selected_verb,
                 help="Digite o infinitivo do verbo em inglês (sem o 'to')."
             )
             
@@ -939,6 +980,30 @@ else:
             
         study_mode = st.checkbox("📖 Modo Estudo (ocultar respostas para testes rápidos)", key="study_mode")
         
+        # Auxiliares para ajudar o usuário a escolher/traduzir verbos
+        col_help1, col_help2 = st.columns(2)
+        with col_help1:
+            with st.expander("🔍 Traduzir verbo do Português"):
+                st.text_input("Verbo em português (ex: falar, correr, comer):", key="pt_verb_input")
+                # Botão usando callback on_click!
+                st.button("Traduzir para Inglês 🔄", use_container_width=True, on_click=callback_translate_verb)
+                            
+        with col_help2:
+            with st.expander("📚 Lista de Verbos Comuns"):
+                common_verbs = [
+                    "be", "have", "do", "say", "go", "get", "make", "know", "think", "take",
+                    "see", "come", "want", "use", "find", "give", "tell", "work", "call", "try",
+                    "ask", "need", "feel", "leave", "put", "mean", "keep", "let", "begin", "seem",
+                    "help", "talk", "turn", "start", "show", "hear", "play", "run", "move", "like"
+                ]
+                # Dropdown usando callback on_change!
+                st.selectbox(
+                    "Escolha um verbo comum:", 
+                    ["-- Selecione --"] + common_verbs, 
+                    key="common_verbs_select",
+                    on_change=callback_select_common_verb
+                )
+                    
         generate_clicked = st.button("📊 Gerar / Buscar Conjugações", use_container_width=True)
         
         # Dispara busca/geração se clicou no botão ou no histórico da sidebar
