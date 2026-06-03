@@ -452,7 +452,7 @@ def generate_conjugations_api(verb, person):
     user_prompt = f"Gere a tabela de conjugação para o verbo '{verb}' e a pessoa '{person}'."
     
     model = genai.GenerativeModel(
-        model_name='gemini-2.0-flash',
+        model_name='gemini-2.5-flash',
         system_instruction=system_prompt,
         generation_config={
             "response_mime_type": "application/json",
@@ -488,10 +488,10 @@ def handle_api_error(e):
         <div class="card-incorrect" style="background-color: #fffbeb; border-color: #fef3c7; border-left-color: #d97706; color: #b45309;">
             <h4 style="margin:0; font-family:'Outfit';">⚠️ Limite de Requisições da API Excedido</h4>
             <p style="margin-top:0.5rem; margin-bottom:0.5rem;">
-                Você atingiu o limite de cota da API do Gemini. Verifique se o billing está ativo no seu projeto em <strong>console.cloud.google.com</strong>.
+                Você atingiu o limite de cota da versão gratuita do Gemini (geralmente limitado a 15 requisições por minuto).
             </p>
             <p style="margin:0; font-size: 0.9rem; font-weight: 600;">
-                ⏱️ Se o billing já estiver ativo, aguarde alguns segundos e tente novamente.
+                ⏱️ Por favor, aguarde cerca de 30 a 60 segundos antes de tentar novamente para que o Google libere seu acesso!
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -584,7 +584,7 @@ else:
 
 st.sidebar.markdown("""
 ---
-ℹ️ **Modelo:** gemini-2.0-flash com billing ativo. Sem limites rígidos de requisições diárias.
+⚠️ **Nota de Cota:** A API gratuita do Gemini possui um limite de requisições por minuto. Caso receba um alerta de limite, apenas aguarde 1 minuto para continuar praticando!
 """)
 
 # ------------------------------------------------------------------------------
@@ -643,7 +643,7 @@ def analyze_sentence(user_sentence, user_doubt):
         user_prompt += f"\nDúvida/Pesquisa enviada pelo usuário (em português): '{user_doubt.strip()}'"
         
     model = genai.GenerativeModel(
-        model_name='gemini-2.0-flash',
+        model_name='gemini-2.5-flash',
         system_instruction=system_prompt,
         generation_config={
             "response_mime_type": "application/json",
@@ -693,7 +693,7 @@ def generate_phrases_api(words_list):
     user_prompt = f"Gere frases em inglês misturando as seguintes palavras do usuário: '{words_list}'"
     
     model = genai.GenerativeModel(
-        model_name='gemini-2.0-flash',
+        model_name='gemini-2.5-flash',
         system_instruction=system_prompt,
         generation_config={
             "response_mime_type": "application/json",
@@ -927,7 +927,7 @@ else:
                         import google.generativeai as genai
                         genai.configure(api_key=current_key)
                         prompt = f"Traduza o verbo em português '{pt_val}' para o inglês no infinitivo sem o 'to'. Retorne APENAS a palavra em inglês minúscula, sem pontuação ou comentários."
-                        model = genai.GenerativeModel('gemini-2.0-flash')
+                        model = genai.GenerativeModel('gemini-2.5-flash')
                         response = model.generate_content(prompt)
                         en_verb = response.text.strip().lower()
                         
