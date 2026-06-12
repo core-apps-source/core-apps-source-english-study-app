@@ -238,6 +238,39 @@ def get_cached_conjugations(verb, person):
         return [dict(row) for row in rows]
     return None
 
+def resolve_cached_verb(verb_clean, study_type):
+    verb_clean = verb_clean.lower().strip()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    if study_type == "Verbo":
+        cursor.execute("SELECT DISTINCT verb FROM conjugations WHERE LOWER(verb) = ?", (verb_clean,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+        
+    elif study_type == "Adjetivo (com 'to be')":
+        target = verb_clean if verb_clean.startswith("be ") else f"be {verb_clean}"
+        cursor.execute("SELECT DISTINCT verb FROM conjugations WHERE LOWER(verb) = ?", (target,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+        
+    elif study_type == "Verbo + Adjetivo":
+        cursor.execute("SELECT DISTINCT verb FROM conjugations WHERE LOWER(verb) = ?", (verb_clean,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+        
+    elif study_type == "Substantivo":
+        cursor.execute("SELECT DISTINCT verb FROM conjugations WHERE LOWER(verb) LIKE ?", (f"%{verb_clean}%",))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+        
+    conn.close()
+    return None
+
 def save_conjugations(verb, person, tenses_list):
     verb = verb.lower().strip()
     conn = sqlite3.connect(DB_PATH)
@@ -389,15 +422,26 @@ def validate_conjugation_json(data):
                 return False
     return True
 
-def generate_conjugations_api(verb, person):
+def generate_conjugations_api(word, person, study_type):
     current_key = get_api_key()
     if not current_key:
         raise ValueError("API_KEY_MISSING")
     genai.configure(api_key=current_key)
     
+    # Customizar instruções com base no tipo de estudo
+    if study_type == "Adjetivo (com 'to be')":
+        adj = word.lower().replace("be ", "").strip()
+        instruction = f"Sua tarefa é gerar a conjugação completa do adjetivo '{adj}' associado ao verbo 'to be' (ou seja, a expressão 'be {adj}') para a pessoa gramatical '{person}' em todos os 12 tempos verbais em inglês. Ex: 'I am {adj}', 'He was {adj}', 'I will be {adj}'."
+    elif study_type == "Verbo + Adjetivo":
+        instruction = f"Sua tarefa é gerar a conjugação completa da expressão de verbo + adjetivo '{word}' (ex: 'get tired', 'feel happy', 'look beautiful') para a pessoa gramatical '{person}' em todos os 12 tempos verbais em inglês."
+    elif study_type == "Substantivo":
+        instruction = f"Sua tarefa é escolher um verbo de ação muito comum e natural que combine com o substantivo '{word}' (ex: se for 'car', use 'drive a car' ou 'have a car'; se for 'apple', use 'eat an apple') e gerar a conjugação completa dessa expressão para a pessoa gramatical '{person}' em todos os 12 tempos verbais em inglês."
+    else:  # Verbo
+        instruction = f"Sua tarefa é gerar a conjugação completa do verbo '{word}' para a pessoa gramatical '{person}' em todos os 12 tempos verbais em inglês."
+
     system_prompt = f"""
     Você é um especialista em gramática da língua inglesa.
-    Sua tarefa é gerar a conjugação completa do verbo "{verb}" para a pessoa gramatical "{person}" em todos os 12 tempos verbais em inglês.
+    {instruction}
     
     Os 12 tempos verbais obrigatórios são:
     1. Present Simple
@@ -428,10 +472,11 @@ def generate_conjugations_api(verb, person):
     2. Use contrações naturais onde apropriado nas formas negativas (ex: "doesn't" em vez de "does not", "didn't" em vez de "did not"), mas mantenha a clareza.
     3. As traduções devem ser naturais em português do Brasil.
     4. Retorne a resposta ESTREITAMENTE no formato JSON estruturado a seguir, sem explicações extras, comentários ou tags markdown (como ```json).
+    5. No campo 'verb' do JSON de retorno, indique a expressão verbal/conjugada completa que você utilizou (ex: 'be {word}', 'get {word}', 'drive a car', '{word}').
     
     Estrutura JSON esperada:
     {{
-      "verb": "{verb}",
+      "verb": "Expressão verbal completa utilizada (ex: se o tipo for adjetivo, retorne 'be happy')",
       "person": "{person}",
       "tenses": [
         {{
@@ -449,14 +494,14 @@ def generate_conjugations_api(verb, person):
     }}
     """
     
-    user_prompt = f"Gere a tabela de conjugação para o verbo '{verb}' e a pessoa '{person}'."
+    user_prompt = f"Gere a tabela de conjugação para '{word}' e a pessoa '{person}' usando o tipo '{study_type}'."
     
     model = genai.GenerativeModel(
         model_name='gemini-2.5-flash',
         system_instruction=system_prompt,
         generation_config={
             "response_mime_type": "application/json",
-            "temperature": 0.1,
+            "temperature": 0.15,
         }
     )
     
@@ -896,6 +941,8 @@ else:
         st.session_state.active_verb = ""
     if 'active_person' not in st.session_state:
         st.session_state.active_person = ""
+    if 'study_type' not in st.session_state:
+        st.session_state.study_type = "Verbo"
         
     # Inicialização do Quiz no session_state
     if 'quiz_score' not in st.session_state:
@@ -916,8 +963,8 @@ else:
     
     with tab_tables:
         # 1. Definição dos callbacks que rodam ANTES da renderização
-        def callback_translate_verb():
-            pt_val = st.session_state.get("pt_verb_input", "").strip()
+        def callback_translate_word():
+            pt_val = st.session_state.get("pt_word_input", "").strip()
             if pt_val:
                 try:
                     current_key = get_api_key()
@@ -926,14 +973,37 @@ else:
                     else:
                         import google.generativeai as genai
                         genai.configure(api_key=current_key)
-                        prompt = f"Traduza o verbo em português '{pt_val}' para o inglês no infinitivo sem o 'to'. Retorne APENAS a palavra em inglês minúscula, sem pontuação ou comentários."
-                        model = genai.GenerativeModel('gemini-2.5-flash')
-                        response = model.generate_content(prompt)
-                        en_verb = response.text.strip().lower()
                         
-                        st.session_state.selected_verb = en_verb
-                        st.session_state.verb_input_widget = en_verb
-                        st.session_state.translate_success = f"🎉 Traduzido! '{pt_val}' em inglês é '{en_verb}'."
+                        prompt = f"""
+                        Analise a palavra ou expressão em português '{pt_val}'.
+                        1. Traduza-a para o inglês.
+                        2. Identifique o tipo gramatical correspondente:
+                           - Se for um verbo, use 'Verbo'.
+                           - Se for um adjetivo, use 'Adjetivo (com 'to be')'.
+                           - Se for um substantivo, use 'Substantivo'.
+                        3. Se for um adjetivo ou substantivo, forneça uma tradução direta no infinitivo/singular (ex: 'feliz' -> 'happy', 'carro' -> 'car').
+                        
+                        Retorne a resposta ESTREITAMENTE no formato JSON a seguir, sem explicações extras ou markdown:
+                        {{
+                          "translation": "Tradução em inglês (minúscula, ex: 'run', 'happy' ou 'car')",
+                          "type": "Um dos valores: 'Verbo', 'Adjetivo (com 'to be')', ou 'Substantivo'",
+                          "explanation": "Explicação curta em português (ex: 'correr é um verbo que se traduz como run')"
+                        }}
+                        """
+                        
+                        model = genai.GenerativeModel('gemini-2.5-flash', generation_config={"response_mime_type": "application/json"})
+                        response = model.generate_content(prompt)
+                        res_data = json.loads(response.text.strip())
+                        
+                        en_word = res_data["translation"].strip().lower()
+                        word_type = res_data["type"]
+                        explanation = res_data.get("explanation", "")
+                        
+                        st.session_state.selected_verb = en_word
+                        st.session_state.verb_input_widget = en_word
+                        st.session_state.study_type = word_type
+                        st.session_state.study_type_select = word_type
+                        st.session_state.translate_success = f"🎉 Traduzido! '{pt_val}' em inglês é '{en_word}' ({word_type}). {explanation}"
                 except Exception as e:
                     st.session_state.translate_error = f"Erro na tradução: {e}"
 
@@ -942,6 +1012,24 @@ else:
             if val and val != "-- Selecione --":
                 st.session_state.selected_verb = val
                 st.session_state.verb_input_widget = val
+                st.session_state.study_type = "Verbo"
+                st.session_state.study_type_select = "Verbo"
+
+        def callback_select_common_adjective():
+            val = st.session_state.get("common_adjectives_select", "-- Selecione --")
+            if val and val != "-- Selecione --":
+                st.session_state.selected_verb = val
+                st.session_state.verb_input_widget = val
+                st.session_state.study_type = "Adjetivo (com 'to be')"
+                st.session_state.study_type_select = "Adjetivo (com 'to be')"
+
+        def callback_select_common_noun():
+            val = st.session_state.get("common_nouns_select", "-- Selecione --")
+            if val and val != "-- Selecione --":
+                st.session_state.selected_verb = val
+                st.session_state.verb_input_widget = val
+                st.session_state.study_type = "Substantivo"
+                st.session_state.study_type_select = "Substantivo"
 
         # 2. Exibição de alertas persistidos de reruns
         if "translate_success" in st.session_state and st.session_state.translate_success:
@@ -951,9 +1039,9 @@ else:
             st.error(st.session_state.translate_error)
             st.session_state.translate_error = None
             
-        col_verb, col_person = st.columns(2)
+        col_word, col_type, col_person = st.columns(3)
         
-        with col_verb:
+        with col_word:
             if "selected_verb" not in st.session_state:
                 st.session_state.selected_verb = ""
                 
@@ -962,12 +1050,31 @@ else:
                 st.session_state.selected_verb = st.session_state.verb_input_widget
                 
             verb = st.text_input(
-                "Digite o verbo em inglês:",
+                "Digite a palavra/frase em inglês:",
                 value=st.session_state.selected_verb,
-                placeholder="Ex: speak, write, run, go",
+                placeholder="Ex: speak, happy, get tired, car",
                 key="verb_input_widget",
                 on_change=sync_selected_verb,
-                help="Digite o infinitivo do verbo em inglês (sem o 'to')."
+                help="Digite um verbo, adjetivo, expressão (verbo+adjetivo) ou substantivo em inglês."
+            )
+
+        with col_type:
+            def sync_study_type():
+                st.session_state.study_type = st.session_state.study_type_select
+
+            study_types_list = ["Verbo", "Adjetivo (com 'to be')", "Verbo + Adjetivo", "Substantivo"]
+            try:
+                type_index = study_types_list.index(st.session_state.study_type)
+            except ValueError:
+                type_index = 0
+
+            study_type = st.selectbox(
+                "Tipo de Estudo:",
+                study_types_list,
+                index=type_index,
+                key="study_type_select",
+                on_change=sync_study_type,
+                help="Escolha o tipo de treino desejado para o termo fornecido."
             )
             
         with col_person:
@@ -983,26 +1090,51 @@ else:
         # Auxiliares para ajudar o usuário a escolher/traduzir verbos
         col_help1, col_help2 = st.columns(2)
         with col_help1:
-            with st.expander("🔍 Traduzir verbo do Português"):
-                st.text_input("Verbo em português (ex: falar, correr, comer):", key="pt_verb_input")
+            with st.expander("🔍 Traduzir do Português"):
+                st.text_input("Palavra em português (ex: falar, feliz, carro):", key="pt_word_input")
                 # Botão usando callback on_click!
-                st.button("Traduzir para Inglês 🔄", use_container_width=True, on_click=callback_translate_verb)
+                st.button("Traduzir para Inglês 🔄", use_container_width=True, on_click=callback_translate_word)
                             
         with col_help2:
-            with st.expander("📚 Lista de Verbos Comuns"):
-                common_verbs = [
-                    "be", "have", "do", "say", "go", "get", "make", "know", "think", "take",
-                    "see", "come", "want", "use", "find", "give", "tell", "work", "call", "try",
-                    "ask", "need", "feel", "leave", "put", "mean", "keep", "let", "begin", "seem",
-                    "help", "talk", "turn", "start", "show", "hear", "play", "run", "move", "like"
-                ]
-                # Dropdown usando callback on_change!
-                st.selectbox(
-                    "Escolha um verbo comum:", 
-                    ["-- Selecione --"] + common_verbs, 
-                    key="common_verbs_select",
-                    on_change=callback_select_common_verb
-                )
+            with st.expander("📚 Listas de Palavras Comuns"):
+                word_category = st.radio("Categoria:", ["Verbos", "Adjetivos", "Substantivos"], horizontal=True, key="common_words_category")
+                if word_category == "Verbos":
+                    common_verbs = [
+                        "be", "have", "do", "say", "go", "get", "make", "know", "think", "take",
+                        "see", "come", "want", "use", "find", "give", "tell", "work", "call", "try",
+                        "ask", "need", "feel", "leave", "put", "mean", "keep", "let", "begin", "seem",
+                        "help", "talk", "turn", "start", "show", "hear", "play", "run", "move", "like"
+                    ]
+                    st.selectbox(
+                        "Escolha um verbo comum:", 
+                        ["-- Selecione --"] + common_verbs, 
+                        key="common_verbs_select",
+                        on_change=callback_select_common_verb
+                    )
+                elif word_category == "Adjetivos":
+                    common_adjectives = [
+                        "happy", "sad", "tired", "busy", "hungry", "angry", "excited", "bored",
+                        "scared", "sick", "late", "ready", "smart", "strong", "weak", "cold",
+                        "hot", "proud", "worried", "nervous"
+                    ]
+                    st.selectbox(
+                        "Escolha um adjetivo comum:", 
+                        ["-- Selecione --"] + common_adjectives, 
+                        key="common_adjectives_select",
+                        on_change=callback_select_common_adjective
+                    )
+                else:
+                    common_nouns = [
+                        "car", "book", "house", "friend", "job", "dog", "city", "money",
+                        "time", "family", "class", "game", "song", "movie", "water", "food",
+                        "computer", "phone", "coffee", "tea"
+                    ]
+                    st.selectbox(
+                        "Escolha um substantivo comum:", 
+                        ["-- Selecione --"] + common_nouns, 
+                        key="common_nouns_select",
+                        on_change=callback_select_common_noun
+                    )
                     
         generate_clicked = st.button("📊 Gerar / Buscar Conjugações", use_container_width=True)
         
@@ -1011,29 +1143,37 @@ else:
             st.session_state.should_generate = False # consome a flag
             
             if not verb or verb.strip() == "":
-                st.warning("⚠️ Por favor, digite um verbo válido.")
+                st.warning("⚠️ Por favor, digite um termo válido.")
             else:
                 verb_clean = verb.lower().strip()
                 
                 with st.spinner(f"🧠 Buscando conjugações de '{verb_clean}' para '{person}'..."):
                     try:
-                        # Busca no banco de dados SQLite (cache)
-                        tenses_data = get_cached_conjugations(verb_clean, person)
+                        # 1. Tentar resolver a palavra na chave de cache correspondente
+                        resolved_verb = resolve_cached_verb(verb_clean, st.session_state.study_type)
+                        tenses_data = None
                         
+                        if resolved_verb:
+                            tenses_data = get_cached_conjugations(resolved_verb, person)
+                            if tenses_data:
+                                verb_clean = resolved_verb
+                        
+                        # 2. Se não encontrou no banco, chama a API do Gemini
                         if tenses_data is None:
-                            # Se não encontrou no banco, chama a API do Gemini
-                            raw_response = generate_conjugations_api(verb_clean, person)
+                            raw_response = generate_conjugations_api(verb_clean, person, st.session_state.study_type)
                             response_data = json.loads(raw_response)
                             
                             # Valida o formato da resposta
                             if validate_conjugation_json(response_data):
-                                save_conjugations(verb_clean, person, response_data["tenses"])
+                                resolved_verb_from_api = response_data.get("verb", verb_clean).lower().strip()
+                                save_conjugations(resolved_verb_from_api, person, response_data["tenses"])
                                 tenses_data = response_data["tenses"]
+                                verb_clean = resolved_verb_from_api
                             else:
                                 st.error("❌ O Gemini retornou uma resposta inválida ou incompleta. Por favor, tente novamente.")
                         
                         if tenses_data:
-                            # Salva o verbo no histórico
+                            # Salva o termo final no histórico
                             save_to_history(verb_clean)
                             
                             # Atualiza dados ativos na sessão
