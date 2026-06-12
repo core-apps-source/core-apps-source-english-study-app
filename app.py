@@ -422,6 +422,94 @@ def validate_conjugation_json(data):
                 return False
     return True
 
+def validate_multiple_conjugations_json(data, persons):
+    if not isinstance(data, dict):
+        return False
+    if "results" not in data or not isinstance(data["results"], dict):
+        return False
+    for p in persons:
+        if p not in data["results"]:
+            return False
+        single_person_data = {"tenses": data["results"][p]}
+        if not validate_conjugation_json(single_person_data):
+            return False
+    return True
+
+def generate_multiple_conjugations_api(word, persons, study_type):
+    current_key = get_api_key()
+    if not current_key:
+        raise ValueError("API_KEY_MISSING")
+    genai.configure(api_key=current_key)
+    
+    # Customizar instruções com base no tipo de estudo
+    if study_type == "Adjetivo (com 'to be')":
+        adj = word.lower().replace("be ", "").strip()
+        instruction = f"Sua tarefa é gerar a conjugação completa do adjetivo '{adj}' associado ao verbo 'to be' (expressão 'be {adj}') para as seguintes pessoas gramaticais: {', '.join(persons)} em todos os 12 tempos verbais em inglês."
+    elif study_type == "Verbo + Adjetivo":
+        instruction = f"Sua tarefa é gerar a conjugação completa da expressão '{word}' para as seguintes pessoas gramaticais: {', '.join(persons)} em todos os 12 tempos verbais em inglês."
+    elif study_type == "Substantivo":
+        instruction = f"Sua tarefa é escolher um verbo de ação muito comum e natural que combine com o substantivo '{word}' (ex: se for 'car', use 'drive a car') e gerar a conjugação completa dessa expressão para as seguintes pessoas gramaticais: {', '.join(persons)} em todos os 12 tempos verbais em inglês."
+    else:
+        instruction = f"Sua tarefa é gerar a conjugação completa do verbo '{word}' para as seguintes pessoas gramaticais: {', '.join(persons)} em todos os 12 tempos verbais em inglês."
+
+    system_prompt = f"""
+    Você é um especialista em gramática da língua inglesa.
+    {instruction}
+    
+    Os 12 tempos verbais obrigatórios são os padrões: Present Simple, Present Continuous, Present Perfect, Present Perfect Continuous, Past Simple, Past Continuous, Past Perfect, Past Perfect Continuous, Future Simple, Future Continuous, Future Perfect, Future Perfect Continuous.
+    
+    Para cada pessoa listada e cada tempo verbal, forneça:
+    - Affirmative: Frase afirmativa
+    - Affirmative Translation: Tradução da frase afirmativa
+    - Question: Frase interrogativa
+    - Question Translation: Tradução da pergunta
+    - Negative: Frase negativa
+    - Negative Translation: Tradução da negação
+    - Example: Frase de exemplo curta
+    - Example Translation: Tradução do exemplo
+    
+    INSTRUÇÕES IMPORTANTES:
+    1. Use contrações naturais nas formas negativas (ex: "doesn't", "didn't").
+    2. Traduções naturais em português do Brasil.
+    3. Retorne a resposta ESTREITAMENTE no formato JSON estruturado a seguir, sem markdown ou explicações.
+    4. No campo 'verb', indique a expressão verbal/conjugada completa utilizada (ex: 'be {word}', 'get {word}', 'drive a car', '{word}').
+    
+    Estrutura JSON esperada:
+    {{
+      "verb": "Expressão verbal completa utilizada",
+      "results": {{
+        "Pessoa1": [
+          {{
+            "tense": "Present Simple",
+            "affirmative_text": "...",
+            "affirmative_translation": "...",
+            "question_text": "...",
+            "question_translation": "...",
+            "negative_text": "...",
+            "negative_translation": "...",
+            "example_text": "...",
+            "example_translation": "..."
+          }},
+          ...
+        ]
+      }}
+    }}
+    """
+    
+    user_prompt = f"Gere conjugações de '{word}' para as pessoas: {', '.join(persons)} usando o tipo '{study_type}'."
+    
+    model = genai.GenerativeModel(
+        model_name='gemini-2.5-flash',
+        system_instruction=system_prompt,
+        generation_config={
+            "response_mime_type": "application/json",
+            "temperature": 0.15,
+        }
+    )
+    
+    response = model.generate_content(user_prompt)
+    return response.text
+
 def generate_conjugations_api(word, person, study_type):
     current_key = get_api_key()
     if not current_key:
@@ -1080,8 +1168,8 @@ else:
         with col_person:
             person = st.selectbox(
                 "Escolha a pessoa gramatical:",
-                ["I", "You", "He", "She", "It", "We", "You (plural)", "They"],
-                index=2, # Default para "He"
+                ["Todas as pessoas", "I", "You", "He", "She", "It", "We", "You (plural)", "They"],
+                index=3, # Default para "He"
                 key="person_select_field"
             )
             
@@ -1151,28 +1239,59 @@ else:
                     try:
                         # 1. Tentar resolver a palavra na chave de cache correspondente
                         resolved_verb = resolve_cached_verb(verb_clean, st.session_state.study_type)
-                        tenses_data = None
+                        tenses_data = {}
                         
-                        if resolved_verb:
-                            tenses_data = get_cached_conjugations(resolved_verb, person)
-                            if tenses_data:
-                                verb_clean = resolved_verb
-                        
-                        # 2. Se não encontrou no banco, chama a API do Gemini
-                        if tenses_data is None:
-                            raw_response = generate_conjugations_api(verb_clean, person, st.session_state.study_type)
-                            response_data = json.loads(raw_response)
+                        # Definir lista de pessoas a buscar
+                        if person == "Todas as pessoas":
+                            target_persons = ["I", "You", "He", "She", "It", "We", "You (plural)", "They"]
+                        else:
+                            target_persons = [person]
                             
-                            # Valida o formato da resposta
-                            if validate_conjugation_json(response_data):
-                                resolved_verb_from_api = response_data.get("verb", verb_clean).lower().strip()
-                                save_conjugations(resolved_verb_from_api, person, response_data["tenses"])
-                                tenses_data = response_data["tenses"]
-                                verb_clean = resolved_verb_from_api
+                        # Verificar cache para cada pessoa
+                        missing_persons = []
+                        if resolved_verb:
+                            for p in target_persons:
+                                p_cached = get_cached_conjugations(resolved_verb, p)
+                                if p_cached:
+                                    tenses_data[p] = p_cached
+                                else:
+                                    missing_persons.append(p)
+                            verb_clean = resolved_verb
+                        else:
+                            missing_persons = list(target_persons)
+                            
+                        # Se houver pessoas faltando no cache, buscar do Gemini
+                        if missing_persons:
+                            if len(missing_persons) == 1:
+                                # Apenas 1 pessoa: usar API simples existente
+                                single_p = missing_persons[0]
+                                raw_response = generate_conjugations_api(verb_clean, single_p, st.session_state.study_type)
+                                response_data = json.loads(raw_response)
+                                
+                                if validate_conjugation_json(response_data):
+                                    resolved_verb_from_api = response_data.get("verb", verb_clean).lower().strip()
+                                    save_conjugations(resolved_verb_from_api, single_p, response_data["tenses"])
+                                    tenses_data[single_p] = response_data["tenses"]
+                                    verb_clean = resolved_verb_from_api
+                                else:
+                                    st.error(f"❌ O Gemini retornou uma resposta inválida para a pessoa '{single_p}'.")
                             else:
-                                st.error("❌ O Gemini retornou uma resposta inválida ou incompleta. Por favor, tente novamente.")
-                        
-                        if tenses_data:
+                                # Múltiplas pessoas: usar a nova API em lote
+                                raw_response = generate_multiple_conjugations_api(verb_clean, missing_persons, st.session_state.study_type)
+                                response_data = json.loads(raw_response)
+                                
+                                if validate_multiple_conjugations_json(response_data, missing_persons):
+                                    resolved_verb_from_api = response_data.get("verb", verb_clean).lower().strip()
+                                    for p in missing_persons:
+                                        p_tenses = response_data["results"][p]
+                                        save_conjugations(resolved_verb_from_api, p, p_tenses)
+                                        tenses_data[p] = p_tenses
+                                    verb_clean = resolved_verb_from_api
+                                else:
+                                    st.error("❌ O Gemini retornou uma resposta inválida para o lote de pessoas.")
+                                    
+                        # Atualizar dados ativos na sessão se conseguimos carregar todas as pessoas requisitadas
+                        if len(tenses_data) == len(target_persons):
                             # Salva o termo final no histórico
                             save_to_history(verb_clean)
                             
@@ -1192,124 +1311,136 @@ else:
         if st.session_state.active_conjugations:
             active_v = st.session_state.active_verb
             active_p = st.session_state.active_person
-            tenses = st.session_state.active_conjugations
+            active_conjs = st.session_state.active_conjugations
             
             st.markdown("---")
-            st.markdown(f"### 📋 Conjugação de **{active_v.capitalize()}** para **{active_p}**")
             
-            # Renderiza cada um dos 12 tempos verbais
-            for tense_data in tenses:
-                tense_name = tense_data["tense"]
-                reveal_key = f"reveal_{active_v}_{active_p}_{tense_name}"
-                if reveal_key not in st.session_state:
-                    st.session_state[reveal_key] = False
-                    
-                with st.expander(f"📌 {tense_name}"):
-                    if study_mode and not st.session_state[reveal_key]:
-                        st.markdown("<div style='text-align: center; padding: 0.5rem;'>", unsafe_allow_html=True)
-                        st.write("🙈 *Conteúdo ocultado pelo Modo Estudo.*")
-                        if st.button("👁️ Mostrar resposta", key=f"btn_reveal_{tense_name}_{active_v}_{active_p}", use_container_width=True):
-                            st.session_state[reveal_key] = True
-                            st.rerun()
-                        st.markdown("</div>", unsafe_allow_html=True)
-                    else:
-                        if study_mode:
-                            if st.button("🙈 Ocultar resposta", key=f"btn_hide_{tense_name}_{active_v}_{active_p}", use_container_width=True):
-                                st.session_state[reveal_key] = False
-                                st.rerun()
-                                
-                        # Layout premium em 2 colunas para os 4 modos
-                        col1, col2 = st.columns(2)
+            def render_conjugation_tenses(active_v, active_p, tenses, study_mode):
+                for tense_data in tenses:
+                    tense_name = tense_data["tense"]
+                    reveal_key = f"reveal_{active_v}_{active_p}_{tense_name}"
+                    if reveal_key not in st.session_state:
+                        st.session_state[reveal_key] = False
                         
-                        with col1:
-                            # 🟢 Afirmativa
-                            st.markdown("##### 🟢 Afirmativa")
-                            st.markdown(f'<div class="card-conjugation">{tense_data["affirmative_text"]}</div>', unsafe_allow_html=True)
-                            
-                            toggle_aff = f"toggle_{active_v}_{active_p}_{tense_name}_affirmative"
-                            if toggle_aff not in st.session_state:
-                                st.session_state[toggle_aff] = False
-                                
-                            btn_label_aff = "🙈 Ocultar tradução" if st.session_state[toggle_aff] else "👁️ Traduzir"
-                            if st.button(btn_label_aff, key=f"btn_{toggle_aff}", use_container_width=True):
-                                st.session_state[toggle_aff] = not st.session_state[toggle_aff]
+                    with st.expander(f"📌 {tense_name}"):
+                        if study_mode and not st.session_state[reveal_key]:
+                            st.markdown("<div style='text-align: center; padding: 0.5rem;'>", unsafe_allow_html=True)
+                            st.write("🙈 *Conteúdo ocultado pelo Modo Estudo.*")
+                            if st.button("👁️ Mostrar resposta", key=f"btn_reveal_{tense_name}_{active_v}_{active_p}", use_container_width=True):
+                                st.session_state[reveal_key] = True
                                 st.rerun()
-                                
-                            if st.session_state[toggle_aff]:
-                                st.markdown(f"""
-                                <div style="background-color: #faf5ff; border: 1px dashed #c084fc; border-radius: 8px; padding: 0.6rem; margin-bottom: 1rem; color: #581c87; font-size: 0.95rem; font-weight: 500;">
-                                    {tense_data["affirmative_translation"]}
-                                </div>
-                                """, unsafe_allow_html=True)
-                            else:
-                                st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
-                                
-                            # 🔴 Negativa
-                            st.markdown("##### 🔴 Negativa")
-                            st.markdown(f'<div class="card-conjugation">{tense_data["negative_text"]}</div>', unsafe_allow_html=True)
+                            st.markdown("</div>", unsafe_allow_html=True)
+                        else:
+                            if study_mode:
+                                if st.button("🙈 Ocultar resposta", key=f"btn_hide_{tense_name}_{active_v}_{active_p}", use_container_width=True):
+                                    st.session_state[reveal_key] = False
+                                    st.rerun()
+                                    
+                            # Layout premium em 2 colunas para os 4 modos
+                            col1, col2 = st.columns(2)
                             
-                            toggle_neg = f"toggle_{active_v}_{active_p}_{tense_name}_negative"
-                            if toggle_neg not in st.session_state:
-                                st.session_state[toggle_neg] = False
+                            with col1:
+                                # 🟢 Afirmativa
+                                st.markdown("##### 🟢 Afirmativa")
+                                st.markdown(f'<div class="card-conjugation">{tense_data["affirmative_text"]}</div>', unsafe_allow_html=True)
                                 
-                            btn_label_neg = "🙈 Ocultar tradução" if st.session_state[toggle_neg] else "👁️ Traduzir"
-                            if st.button(btn_label_neg, key=f"btn_{toggle_neg}", use_container_width=True):
-                                st.session_state[toggle_neg] = not st.session_state[toggle_neg]
-                                st.rerun()
+                                toggle_aff = f"toggle_{active_v}_{active_p}_{tense_name}_affirmative"
+                                if toggle_aff not in st.session_state:
+                                    st.session_state[toggle_aff] = False
+                                    
+                                btn_label_aff = "🙈 Ocultar tradução" if st.session_state[toggle_aff] else "👁️ Traduzir"
+                                if st.button(btn_label_aff, key=f"btn_{toggle_aff}", use_container_width=True):
+                                    st.session_state[toggle_aff] = not st.session_state[toggle_aff]
+                                    st.rerun()
+                                    
+                                if st.session_state[toggle_aff]:
+                                    st.markdown(f"""
+                                    <div style="background-color: #faf5ff; border: 1px dashed #c084fc; border-radius: 8px; padding: 0.6rem; margin-bottom: 1rem; color: #581c87; font-size: 0.95rem; font-weight: 500;">
+                                        {tense_data["affirmative_translation"]}
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                else:
+                                    st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
+                                    
+                                # 🔴 Negativa
+                                st.markdown("##### 🔴 Negativa")
+                                st.markdown(f'<div class="card-conjugation">{tense_data["negative_text"]}</div>', unsafe_allow_html=True)
                                 
-                            if st.session_state[toggle_neg]:
-                                st.markdown(f"""
-                                <div style="background-color: #faf5ff; border: 1px dashed #c084fc; border-radius: 8px; padding: 0.6rem; margin-bottom: 1rem; color: #581c87; font-size: 0.95rem; font-weight: 500;">
-                                    {tense_data["negative_translation"]}
-                                </div>
-                                """, unsafe_allow_html=True)
-                            else:
-                                st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
+                                toggle_neg = f"toggle_{active_v}_{active_p}_{tense_name}_negative"
+                                if toggle_neg not in st.session_state:
+                                    st.session_state[toggle_neg] = False
+                                    
+                                btn_label_neg = "🙈 Ocultar tradução" if st.session_state[toggle_neg] else "👁️ Traduzir"
+                                if st.button(btn_label_neg, key=f"btn_{toggle_neg}", use_container_width=True):
+                                    st.session_state[toggle_neg] = not st.session_state[toggle_neg]
+                                    st.rerun()
+                                    
+                                if st.session_state[toggle_neg]:
+                                    st.markdown(f"""
+                                    <div style="background-color: #faf5ff; border: 1px dashed #c084fc; border-radius: 8px; padding: 0.6rem; margin-bottom: 1rem; color: #581c87; font-size: 0.95rem; font-weight: 500;">
+                                        {tense_data["negative_translation"]}
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                else:
+                                    st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
+                                    
+                            with col2:
+                                # ❓ Pergunta
+                                st.markdown("##### ❓ Pergunta")
+                                st.markdown(f'<div class="card-conjugation">{tense_data["question_text"]}</div>', unsafe_allow_html=True)
                                 
-                        with col2:
-                            # ❓ Pergunta
-                            st.markdown("##### ❓ Pergunta")
-                            st.markdown(f'<div class="card-conjugation">{tense_data["question_text"]}</div>', unsafe_allow_html=True)
-                            
-                            toggle_ques = f"toggle_{active_v}_{active_p}_{tense_name}_question"
-                            if toggle_ques not in st.session_state:
-                                st.session_state[toggle_ques] = False
+                                toggle_ques = f"toggle_{active_v}_{active_p}_{tense_name}_question"
+                                if toggle_ques not in st.session_state:
+                                    st.session_state[toggle_ques] = False
+                                    
+                                btn_label_ques = "🙈 Ocultar tradução" if st.session_state[toggle_ques] else "👁️ Traduzir"
+                                if st.button(btn_label_ques, key=f"btn_{toggle_ques}", use_container_width=True):
+                                    st.session_state[toggle_ques] = not st.session_state[toggle_ques]
+                                    st.rerun()
+                                    
+                                if st.session_state[toggle_ques]:
+                                    st.markdown(f"""
+                                    <div style="background-color: #faf5ff; border: 1px dashed #c084fc; border-radius: 8px; padding: 0.6rem; margin-bottom: 1rem; color: #581c87; font-size: 0.95rem; font-weight: 500;">
+                                        {tense_data["question_translation"]}
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                else:
+                                    st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
+                                    
+                                # 💡 Exemplo
+                                st.markdown("##### 💡 Exemplo")
+                                st.markdown(f'<div class="card-conjugation">{tense_data["example_text"]}</div>', unsafe_allow_html=True)
                                 
-                            btn_label_ques = "🙈 Ocultar tradução" if st.session_state[toggle_ques] else "👁️ Traduzir"
-                            if st.button(btn_label_ques, key=f"btn_{toggle_ques}", use_container_width=True):
-                                st.session_state[toggle_ques] = not st.session_state[toggle_ques]
-                                st.rerun()
-                                
-                            if st.session_state[toggle_ques]:
-                                st.markdown(f"""
-                                <div style="background-color: #faf5ff; border: 1px dashed #c084fc; border-radius: 8px; padding: 0.6rem; margin-bottom: 1rem; color: #581c87; font-size: 0.95rem; font-weight: 500;">
-                                    {tense_data["question_translation"]}
-                                </div>
-                                """, unsafe_allow_html=True)
-                            else:
-                                st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
-                                
-                            # 💡 Exemplo
-                            st.markdown("##### 💡 Exemplo")
-                            st.markdown(f'<div class="card-conjugation">{tense_data["example_text"]}</div>', unsafe_allow_html=True)
-                            
-                            toggle_ex = f"toggle_{active_v}_{active_p}_{tense_name}_example"
-                            if toggle_ex not in st.session_state:
-                                st.session_state[toggle_ex] = False
-                                
-                            btn_label_ex = "🙈 Ocultar tradução" if st.session_state[toggle_ex] else "👁️ Traduzir"
-                            if st.button(btn_label_ex, key=f"btn_{toggle_ex}", use_container_width=True):
-                                st.session_state[toggle_ex] = not st.session_state[toggle_ex]
-                                st.rerun()
-                                
-                            if st.session_state[toggle_ex]:
-                                st.markdown(f"""
-                                <div style="background-color: #faf5ff; border: 1px dashed #c084fc; border-radius: 8px; padding: 0.6rem; margin-bottom: 1rem; color: #581c87; font-size: 0.95rem; font-weight: 500;">
-                                    {tense_data["example_translation"]}
-                                </div>
-                                """, unsafe_allow_html=True)
-                            else:
-                                st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
+                                toggle_ex = f"toggle_{active_v}_{active_p}_{tense_name}_example"
+                                if toggle_ex not in st.session_state:
+                                    st.session_state[toggle_ex] = False
+                                    
+                                btn_label_ex = "🙈 Ocultar tradução" if st.session_state[toggle_ex] else "👁️ Traduzir"
+                                if st.button(btn_label_ex, key=f"btn_{toggle_ex}", use_container_width=True):
+                                    st.session_state[toggle_ex] = not st.session_state[toggle_ex]
+                                    st.rerun()
+                                    
+                                if st.session_state[toggle_ex]:
+                                    st.markdown(f"""
+                                    <div style="background-color: #faf5ff; border: 1px dashed #c084fc; border-radius: 8px; padding: 0.6rem; margin-bottom: 1rem; color: #581c87; font-size: 0.95rem; font-weight: 500;">
+                                        {tense_data["example_translation"]}
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                else:
+                                    st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
+
+            if active_p == "Todas as pessoas" and isinstance(active_conjs, dict):
+                st.markdown(f"### 📋 Conjugações de **{active_v.capitalize()}** (Todas as Pessoas)")
+                pronouns_list = ["I", "You", "He", "She", "It", "We", "You (plural)", "They"]
+                available_pronouns = [p for p in pronouns_list if p in active_conjs]
+                tabs = st.tabs(available_pronouns)
+                for idx, pronoun in enumerate(available_pronouns):
+                    with tabs[idx]:
+                        render_conjugation_tenses(active_v, pronoun, active_conjs[pronoun], study_mode)
+            else:
+                st.markdown(f"### 📋 Conjugação de **{active_v.capitalize()}** para **{active_p}**")
+                tenses = list(active_conjs.values())[0] if isinstance(active_conjs, dict) else active_conjs
+                render_conjugation_tenses(active_v, active_p, tenses, study_mode)
                                 
     with tab_quiz:
         if st.session_state.quiz_current is None:
