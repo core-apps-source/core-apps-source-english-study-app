@@ -1107,6 +1107,7 @@ else:
                         st.session_state.verb_input_widget = en_word
                         st.session_state.study_type = word_type
                         st.session_state.study_type_select = word_type
+                        st.session_state.active_conjugations = None
                         st.session_state.translate_success = f"🎉 Traduzido! '{pt_val}' em inglês é '{en_word}' ({word_type}). {explanation}"
                 except Exception as e:
                     st.session_state.translate_error = f"Erro na tradução: {e}"
@@ -1118,6 +1119,7 @@ else:
                 st.session_state.verb_input_widget = val
                 st.session_state.study_type = "Verbo"
                 st.session_state.study_type_select = "Verbo"
+                st.session_state.active_conjugations = None
 
         def callback_select_common_adjective():
             val = st.session_state.get("common_adjectives_select", "-- Selecione --")
@@ -1126,6 +1128,7 @@ else:
                 st.session_state.verb_input_widget = val
                 st.session_state.study_type = "Adjetivo (com 'to be')"
                 st.session_state.study_type_select = "Adjetivo (com 'to be')"
+                st.session_state.active_conjugations = None
 
         def callback_select_common_noun():
             val = st.session_state.get("common_nouns_select", "-- Selecione --")
@@ -1134,6 +1137,7 @@ else:
                 st.session_state.verb_input_widget = val
                 st.session_state.study_type = "Substantivo"
                 st.session_state.study_type_select = "Substantivo"
+                st.session_state.active_conjugations = None
 
         # 2. Exibição de alertas persistidos de reruns
         if "translate_success" in st.session_state and st.session_state.translate_success:
@@ -1313,6 +1317,7 @@ else:
                             st.session_state.verb_input_widget = word
                             st.session_state.study_type = study_type
                             st.session_state.study_type_select = study_type
+                            st.session_state.active_conjugations = None
                             
                         st.button(btn_label, key=f"ai_sug_{idx}_{en_word}", use_container_width=True, on_click=select_ai_word)
                     
@@ -1321,6 +1326,9 @@ else:
         # Dispara busca/geração se clicou no botão ou no histórico da sidebar
         if generate_clicked or st.session_state.should_generate:
             st.session_state.should_generate = False # consome a flag
+            st.session_state.active_conjugations = None
+            st.session_state.active_verb = ""
+            st.session_state.active_person = ""
             
             if not verb or verb.strip() == "":
                 st.warning("⚠️ Por favor, digite um termo válido.")
@@ -1417,6 +1425,8 @@ else:
                             # Atualiza o quiz caso estivesse sem perguntas
                             if st.session_state.quiz_current is None:
                                 st.session_state.quiz_current = select_random_quiz_question()
+                                
+                            st.rerun()
                             
                     except Exception as e:
                         handle_api_error(e)
