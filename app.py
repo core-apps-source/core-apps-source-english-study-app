@@ -1143,7 +1143,7 @@ else:
             st.error(st.session_state.translate_error)
             st.session_state.translate_error = None
             
-        col_word, col_type, col_tense, col_person = st.columns(4)
+        col_word, col_type, col_person = st.columns([2, 1, 1])
         
         with col_word:
             if "selected_verb" not in st.session_state:
@@ -1180,6 +1180,16 @@ else:
                 on_change=sync_study_type,
                 help="Escolha o tipo de treino desejado para o termo fornecido."
             )
+            
+        with col_person:
+            person = st.selectbox(
+                "Escolha a pessoa gramatical:",
+                ["Todas as pessoas", "I", "You", "He", "She", "It", "We", "You (plural)", "They"],
+                index=3, # Default para "He"
+                key="person_select_field"
+            )
+
+        col_tense, col_forms = st.columns([1, 1])
 
         with col_tense:
             tense_types_list = [
@@ -1194,13 +1204,14 @@ else:
                 key="tense_select_field",
                 help="Escolha se deseja gerar/ver todos os tempos verbais ou apenas um tempo específico."
             )
-            
-        with col_person:
-            person = st.selectbox(
-                "Escolha a pessoa gramatical:",
-                ["Todas as pessoas", "I", "You", "He", "She", "It", "We", "You (plural)", "They"],
-                index=3, # Default para "He"
-                key="person_select_field"
+
+        with col_forms:
+            forms_selected = st.multiselect(
+                "Formas a exibir:",
+                options=["Afirmativa", "Negativa", "Pergunta", "Exemplo"],
+                default=["Afirmativa", "Negativa", "Pergunta", "Exemplo"],
+                key="forms_display_select",
+                help="Selecione quais formas (afirmativa, negativa, pergunta, exemplo) deseja exibir."
             )
             
         study_mode = st.checkbox("📖 Modo Estudo (ocultar respostas para testes rápidos)", key="study_mode")
@@ -1419,6 +1430,16 @@ else:
             st.markdown("---")
             
             def render_conjugation_tenses(active_v, active_p, tenses, study_mode):
+                # Obter formas selecionadas para exibição
+                forms_sel = st.session_state.get("forms_display_select", ["Afirmativa", "Negativa", "Pergunta", "Exemplo"])
+                if not forms_sel:
+                    forms_sel = ["Afirmativa", "Negativa", "Pergunta", "Exemplo"]
+                    
+                show_aff = "Afirmativa" in forms_sel
+                show_neg = "Negativa" in forms_sel
+                show_ques = "Pergunta" in forms_sel
+                show_ex = "Exemplo" in forms_sel
+
                 for tense_data in tenses:
                     tense_name = tense_data["tense"]
                     reveal_key = f"reveal_{active_v}_{active_p}_{tense_name}"
@@ -1439,98 +1460,68 @@ else:
                                     st.session_state[reveal_key] = False
                                     st.rerun()
                                     
-                            # Layout premium em 2 colunas para os 4 modos
-                            col1, col2 = st.columns(2)
-                            
-                            with col1:
-                                # 🟢 Afirmativa
-                                st.markdown("##### 🟢 Afirmativa")
-                                st.markdown(f'<div class="card-conjugation">{tense_data["affirmative_text"]}</div>', unsafe_allow_html=True)
-                                
-                                toggle_aff = f"toggle_{active_v}_{active_p}_{tense_name}_affirmative"
-                                if toggle_aff not in st.session_state:
-                                    st.session_state[toggle_aff] = False
-                                    
-                                btn_label_aff = "🙈 Ocultar tradução" if st.session_state[toggle_aff] else "👁️ Traduzir"
-                                if st.button(btn_label_aff, key=f"btn_{toggle_aff}", use_container_width=True):
-                                    st.session_state[toggle_aff] = not st.session_state[toggle_aff]
-                                    st.rerun()
-                                    
-                                if st.session_state[toggle_aff]:
-                                    st.markdown(f"""
-                                    <div style="background-color: #faf5ff; border: 1px dashed #c084fc; border-radius: 8px; padding: 0.6rem; margin-bottom: 1rem; color: #581c87; font-size: 0.95rem; font-weight: 500;">
-                                        {tense_data["affirmative_translation"]}
-                                    </div>
-                                    """, unsafe_allow_html=True)
+                            # Montar lista de cartões ativos a exibir
+                            active_cards = []
+                            if show_aff:
+                                active_cards.append({
+                                    "key": "affirmative",
+                                    "title": "🟢 Afirmativa",
+                                    "text": tense_data["affirmative_text"],
+                                    "translation": tense_data["affirmative_translation"]
+                                })
+                            if show_neg:
+                                active_cards.append({
+                                    "key": "negative",
+                                    "title": "🔴 Negativa",
+                                    "text": tense_data["negative_text"],
+                                    "translation": tense_data["negative_translation"]
+                                })
+                            if show_ques:
+                                active_cards.append({
+                                    "key": "question",
+                                    "title": "❓ Pergunta",
+                                    "text": tense_data["question_text"],
+                                    "translation": tense_data["question_translation"]
+                                })
+                            if show_ex:
+                                active_cards.append({
+                                    "key": "example",
+                                    "title": "💡 Exemplo",
+                                    "text": tense_data["example_text"],
+                                    "translation": tense_data["example_translation"]
+                                })
+
+                            if not active_cards:
+                                st.warning("⚠️ Nenhuma forma selecionada para exibição.")
+                            else:
+                                if len(active_cards) == 1:
+                                    cols = [st]
                                 else:
-                                    st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
-                                    
-                                # 🔴 Negativa
-                                st.markdown("##### 🔴 Negativa")
-                                st.markdown(f'<div class="card-conjugation">{tense_data["negative_text"]}</div>', unsafe_allow_html=True)
+                                    cols = st.columns(2)
                                 
-                                toggle_neg = f"toggle_{active_v}_{active_p}_{tense_name}_negative"
-                                if toggle_neg not in st.session_state:
-                                    st.session_state[toggle_neg] = False
-                                    
-                                btn_label_neg = "🙈 Ocultar tradução" if st.session_state[toggle_neg] else "👁️ Traduzir"
-                                if st.button(btn_label_neg, key=f"btn_{toggle_neg}", use_container_width=True):
-                                    st.session_state[toggle_neg] = not st.session_state[toggle_neg]
-                                    st.rerun()
-                                    
-                                if st.session_state[toggle_neg]:
-                                    st.markdown(f"""
-                                    <div style="background-color: #faf5ff; border: 1px dashed #c084fc; border-radius: 8px; padding: 0.6rem; margin-bottom: 1rem; color: #581c87; font-size: 0.95rem; font-weight: 500;">
-                                        {tense_data["negative_translation"]}
-                                    </div>
-                                    """, unsafe_allow_html=True)
-                                else:
-                                    st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
-                                    
-                            with col2:
-                                # ❓ Pergunta
-                                st.markdown("##### ❓ Pergunta")
-                                st.markdown(f'<div class="card-conjugation">{tense_data["question_text"]}</div>', unsafe_allow_html=True)
-                                
-                                toggle_ques = f"toggle_{active_v}_{active_p}_{tense_name}_question"
-                                if toggle_ques not in st.session_state:
-                                    st.session_state[toggle_ques] = False
-                                    
-                                btn_label_ques = "🙈 Ocultar tradução" if st.session_state[toggle_ques] else "👁️ Traduzir"
-                                if st.button(btn_label_ques, key=f"btn_{toggle_ques}", use_container_width=True):
-                                    st.session_state[toggle_ques] = not st.session_state[toggle_ques]
-                                    st.rerun()
-                                    
-                                if st.session_state[toggle_ques]:
-                                    st.markdown(f"""
-                                    <div style="background-color: #faf5ff; border: 1px dashed #c084fc; border-radius: 8px; padding: 0.6rem; margin-bottom: 1rem; color: #581c87; font-size: 0.95rem; font-weight: 500;">
-                                        {tense_data["question_translation"]}
-                                    </div>
-                                    """, unsafe_allow_html=True)
-                                else:
-                                    st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
-                                    
-                                # 💡 Exemplo
-                                st.markdown("##### 💡 Exemplo")
-                                st.markdown(f'<div class="card-conjugation">{tense_data["example_text"]}</div>', unsafe_allow_html=True)
-                                
-                                toggle_ex = f"toggle_{active_v}_{active_p}_{tense_name}_example"
-                                if toggle_ex not in st.session_state:
-                                    st.session_state[toggle_ex] = False
-                                    
-                                btn_label_ex = "🙈 Ocultar tradução" if st.session_state[toggle_ex] else "👁️ Traduzir"
-                                if st.button(btn_label_ex, key=f"btn_{toggle_ex}", use_container_width=True):
-                                    st.session_state[toggle_ex] = not st.session_state[toggle_ex]
-                                    st.rerun()
-                                    
-                                if st.session_state[toggle_ex]:
-                                    st.markdown(f"""
-                                    <div style="background-color: #faf5ff; border: 1px dashed #c084fc; border-radius: 8px; padding: 0.6rem; margin-bottom: 1rem; color: #581c87; font-size: 0.95rem; font-weight: 500;">
-                                        {tense_data["example_translation"]}
-                                    </div>
-                                    """, unsafe_allow_html=True)
-                                else:
-                                    st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
+                                for idx, card in enumerate(active_cards):
+                                    col_to_use = cols[idx % len(cols)]
+                                    with col_to_use:
+                                        st.markdown(f"##### {card['title']}")
+                                        st.markdown(f'<div class="card-conjugation">{card["text"]}</div>', unsafe_allow_html=True)
+                                        
+                                        toggle_key = f"toggle_{active_v}_{active_p}_{tense_name}_{card['key']}"
+                                        if toggle_key not in st.session_state:
+                                            st.session_state[toggle_key] = False
+                                            
+                                        btn_label = "🙈 Ocultar tradução" if st.session_state[toggle_key] else "👁️ Traduzir"
+                                        if st.button(btn_label, key=f"btn_{toggle_key}", use_container_width=True):
+                                            st.session_state[toggle_key] = not st.session_state[toggle_key]
+                                            st.rerun()
+                                            
+                                        if st.session_state[toggle_key]:
+                                            st.markdown(f"""
+                                            <div style="background-color: #faf5ff; border: 1px dashed #c084fc; border-radius: 8px; padding: 0.6rem; margin-bottom: 1rem; color: #581c87; font-size: 0.95rem; font-weight: 500;">
+                                                {card["translation"]}
+                                            </div>
+                                            """, unsafe_allow_html=True)
+                                        else:
+                                            st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
 
             if active_p == "Todas as pessoas" and isinstance(active_conjs, dict):
                 first_person = list(active_conjs.keys())[0]
@@ -1559,19 +1550,36 @@ else:
                                     
                             show_translations = st.checkbox("👁️ Mostrar Traduções na Tabela", key=f"trans_chk_{active_v}_{tense_name}", value=True)
                             
-                            html_table = f"""
-                            <table style="width:100%; border-collapse: collapse; margin-top: 10px;">
-                                <thead>
-                                    <tr style="background-color: #f1f5f9; border-bottom: 2px solid #e2e8f0; text-align: left;">
-                                        <th style="padding: 10px; font-weight: 700; color: #475569;">Pessoa</th>
-                                        <th style="padding: 10px; font-weight: 700; color: #15803d;">🟢 Afirmativa</th>
-                                        <th style="padding: 10px; font-weight: 700; color: #b91c1c;">🔴 Negativa</th>
-                                        <th style="padding: 10px; font-weight: 700; color: #1d4ed8;">❓ Pergunta</th>
-                                        <th style="padding: 10px; font-weight: 700; color: #6d28d9;">💡 Exemplo</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                            """
+                            # Obter formas selecionadas para exibição na tabela
+                            forms_sel = st.session_state.get("forms_display_select", ["Afirmativa", "Negativa", "Pergunta", "Exemplo"])
+                            if not forms_sel:
+                                forms_sel = ["Afirmativa", "Negativa", "Pergunta", "Exemplo"]
+                                
+                            show_aff = "Afirmativa" in forms_sel
+                            show_neg = "Negativa" in forms_sel
+                            show_ques = "Pergunta" in forms_sel
+                            show_ex = "Exemplo" in forms_sel
+
+                            # Cabeçalhos ativos
+                            active_headers = ['<th style="padding: 10px; font-weight: 700; color: #475569;">Pessoa</th>']
+                            if show_aff:
+                                active_headers.append('<th style="padding: 10px; font-weight: 700; color: #15803d;">🟢 Afirmativa</th>')
+                            if show_neg:
+                                active_headers.append('<th style="padding: 10px; font-weight: 700; color: #b91c1c;">🔴 Negativa</th>')
+                            if show_ques:
+                                active_headers.append('<th style="padding: 10px; font-weight: 700; color: #1d4ed8;">❓ Pergunta</th>')
+                            if show_ex:
+                                active_headers.append('<th style="padding: 10px; font-weight: 700; color: #6d28d9;">💡 Exemplo</th>')
+
+                            # Construir a tabela sem qualquer espaço ou tabulação no início das linhas
+                            html_table = '<table style="width:100%; border-collapse: collapse; margin-top: 10px;">\n'
+                            html_table += '<thead>\n'
+                            html_table += '<tr style="background-color: #f1f5f9; border-bottom: 2px solid #e2e8f0; text-align: left;">\n'
+                            for h in active_headers:
+                                html_table += f'{h}\n'
+                            html_table += '</tr>\n'
+                            html_table += '</thead>\n'
+                            html_table += '<tbody>\n'
                             
                             pronouns_list = ["I", "You", "He", "She", "It", "We", "You (plural)", "They"]
                             for p in pronouns_list:
@@ -1589,20 +1597,20 @@ else:
                                             ques_txt += f'<br><span style="font-size:0.85rem; color:#64748b; font-style:italic;">{t_data["question_translation"]}</span>'
                                             ex_txt += f'<br><span style="font-size:0.85rem; color:#64748b; font-style:italic;">{t_data["example_translation"]}</span>'
                                             
-                                        html_table += f"""
-                                        <tr style="border-bottom: 1px solid #f1f5f9; vertical-align: top;">
-                                            <td style="padding: 10px; font-weight: 600; color: #475569;">{p}</td>
-                                            <td style="padding: 10px; color: #1e293b;">{aff_txt}</td>
-                                            <td style="padding: 10px; color: #1e293b;">{neg_txt}</td>
-                                            <td style="padding: 10px; color: #1e293b;">{ques_txt}</td>
-                                            <td style="padding: 10px; color: #1e293b;">{ex_txt}</td>
-                                        </tr>
-                                        """
+                                        html_table += '<tr style="border-bottom: 1px solid #f1f5f9; vertical-align: top;">\n'
+                                        html_table += f'<td style="padding: 10px; font-weight: 600; color: #475569;">{p}</td>\n'
+                                        if show_aff:
+                                            html_table += f'<td style="padding: 10px; color: #1e293b;">{aff_txt}</td>\n'
+                                        if show_neg:
+                                            html_table += f'<td style="padding: 10px; color: #1e293b;">{neg_txt}</td>\n'
+                                        if show_ques:
+                                            html_table += f'<td style="padding: 10px; color: #1e293b;">{ques_txt}</td>\n'
+                                        if show_ex:
+                                            html_table += f'<td style="padding: 10px; color: #1e293b;">{ex_txt}</td>\n'
+                                        html_table += '</tr>\n'
                                         
-                            html_table += """
-                                </tbody>
-                            </table>
-                            """
+                            html_table += '</tbody>\n'
+                            html_table += '</table>\n'
                             st.markdown(html_table, unsafe_allow_html=True)
             else:
                 st.markdown(f"### 📋 Conjugação de **{active_v.capitalize()}** para **{active_p}**")
