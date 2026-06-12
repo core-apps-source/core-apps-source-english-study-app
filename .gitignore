@@ -1,0 +1,11 @@
+.env
+.streamlit/secrets.toml
+__pycache__/
+*.py[cod]
+*.log
+*.db
+*.sqlite
+*.sqlite3
+app.py.bak_*
+streamlit_*.log
+streamlit_*.err.log
