@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import json
 import sqlite3
@@ -238,6 +239,27 @@ def get_cached_conjugations(verb, person):
         return [dict(row) for row in rows]
     return None
 
+def get_cached_conjugations_for_tenses(verb, person, target_tenses):
+    verb = verb.lower().strip()
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    placeholders = ",".join(["?"] * len(target_tenses))
+    cursor.execute(f"""
+        SELECT tense, affirmative_text, affirmative_translation, 
+               question_text, question_translation, 
+               negative_text, negative_translation, 
+               example_text, example_translation 
+        FROM conjugations 
+        WHERE LOWER(verb) = ? AND person = ? AND tense IN ({placeholders})
+    """, (verb, person, *target_tenses))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    if len(rows) == len(target_tenses):
+        return [dict(row) for row in rows]
+    return None
+
 def resolve_cached_verb(verb_clean, study_type):
     verb_clean = verb_clean.lower().strip()
     conn = sqlite3.connect(DB_PATH)
@@ -402,12 +424,13 @@ def select_random_quiz_question():
         "expected_verb": expected_verb
     }
 
-def validate_conjugation_json(data):
+def validate_conjugation_json(data, expected_tenses=None):
     if not isinstance(data, dict):
         return False
     if "tenses" not in data or not isinstance(data["tenses"], list):
         return False
-    if len(data["tenses"]) < 12:
+    req_len = len(expected_tenses) if expected_tenses else 12
+    if len(data["tenses"]) < req_len:
         return False
     required_fields = [
         "tense", 
@@ -422,7 +445,7 @@ def validate_conjugation_json(data):
                 return False
     return True
 
-def validate_multiple_conjugations_json(data, persons):
+def validate_multiple_conjugations_json(data, persons, expected_tenses=None):
     if not isinstance(data, dict):
         return False
     if "results" not in data or not isinstance(data["results"], dict):
@@ -431,34 +454,36 @@ def validate_multiple_conjugations_json(data, persons):
         if p not in data["results"]:
             return False
         single_person_data = {"tenses": data["results"][p]}
-        if not validate_conjugation_json(single_person_data):
+        if not validate_conjugation_json(single_person_data, expected_tenses):
             return False
     return True
 
-def generate_multiple_conjugations_api(word, persons, study_type):
+def generate_multiple_conjugations_api(word, persons, study_type, target_tenses):
     current_key = get_api_key()
     if not current_key:
         raise ValueError("API_KEY_MISSING")
     genai.configure(api_key=current_key)
     
+    tenses_str = ", ".join(target_tenses)
+    
     # Customizar instruções com base no tipo de estudo
     if study_type == "Adjetivo (com 'to be')":
         adj = word.lower().replace("be ", "").strip()
-        instruction = f"Sua tarefa é gerar a conjugação completa do adjetivo '{adj}' associado ao verbo 'to be' (expressão 'be {adj}') para as seguintes pessoas gramaticais: {', '.join(persons)} em todos os 12 tempos verbais em inglês."
+        instruction = f"Sua tarefa é gerar a conjugação completa do adjetivo '{adj}' associado ao verbo 'to be' (expressão 'be {adj}') para as seguintes pessoas gramaticais: {', '.join(persons)} para os seguintes tempos verbais: {tenses_str}."
     elif study_type == "Verbo + Adjetivo":
-        instruction = f"Sua tarefa é gerar a conjugação completa da expressão '{word}' para as seguintes pessoas gramaticais: {', '.join(persons)} em todos os 12 tempos verbais em inglês."
+        instruction = f"Sua tarefa é gerar a conjugação completa da expressão '{word}' para as seguintes pessoas gramaticais: {', '.join(persons)} para os seguintes tempos verbais: {tenses_str}."
     elif study_type == "Substantivo":
-        instruction = f"Sua tarefa é escolher um verbo de ação muito comum e natural que combine com o substantivo '{word}' (ex: se for 'car', use 'drive a car') e gerar a conjugação completa dessa expressão para as seguintes pessoas gramaticais: {', '.join(persons)} em todos os 12 tempos verbais em inglês."
+        instruction = f"Sua tarefa é escolher um verbo de ação muito comum e natural que combine com o substantivo '{word}' (ex: se for 'car', use 'drive a car') e gerar a conjugação completa dessa expressão para as seguintes pessoas gramaticais: {', '.join(persons)} para os seguintes tempos verbais: {tenses_str}."
     else:
-        instruction = f"Sua tarefa é gerar a conjugação completa do verbo '{word}' para as seguintes pessoas gramaticais: {', '.join(persons)} em todos os 12 tempos verbais em inglês."
+        instruction = f"Sua tarefa é gerar a conjugação completa do verbo '{word}' para as seguintes pessoas gramaticais: {', '.join(persons)} para os seguintes tempos verbais: {tenses_str}."
 
     system_prompt = f"""
     Você é um especialista em gramática da língua inglesa.
     {instruction}
     
-    Os 12 tempos verbais obrigatórios são os padrões: Present Simple, Present Continuous, Present Perfect, Present Perfect Continuous, Past Simple, Past Continuous, Past Perfect, Past Perfect Continuous, Future Simple, Future Continuous, Future Perfect, Future Perfect Continuous.
+    Os tempos verbais obrigatórios a serem gerados são exatamente: {tenses_str}.
     
-    Para cada pessoa listada e cada tempo verbal, forneça:
+    Para cada pessoa listada e cada tempo verbal especificado, forneça:
     - Affirmative: Frase afirmativa
     - Affirmative Translation: Tradução da frase afirmativa
     - Question: Frase interrogativa
@@ -480,7 +505,7 @@ def generate_multiple_conjugations_api(word, persons, study_type):
       "results": {{
         "Pessoa1": [
           {{
-            "tense": "Present Simple",
+            "tense": "Nome do tempo verbal (ex: Present Simple)",
             "affirmative_text": "...",
             "affirmative_translation": "...",
             "question_text": "...",
@@ -496,7 +521,7 @@ def generate_multiple_conjugations_api(word, persons, study_type):
     }}
     """
     
-    user_prompt = f"Gere conjugações de '{word}' para as pessoas: {', '.join(persons)} usando o tipo '{study_type}'."
+    user_prompt = f"Gere conjugações de '{word}' para as pessoas: {', '.join(persons)} usando o tipo '{study_type}' para os tempos verbais: {tenses_str}."
     
     model = genai.GenerativeModel(
         model_name='gemini-2.5-flash',
@@ -510,42 +535,32 @@ def generate_multiple_conjugations_api(word, persons, study_type):
     response = model.generate_content(user_prompt)
     return response.text
 
-def generate_conjugations_api(word, person, study_type):
+def generate_conjugations_api(word, person, study_type, target_tenses):
     current_key = get_api_key()
     if not current_key:
         raise ValueError("API_KEY_MISSING")
     genai.configure(api_key=current_key)
     
+    tenses_str = ", ".join(target_tenses)
+    
     # Customizar instruções com base no tipo de estudo
     if study_type == "Adjetivo (com 'to be')":
         adj = word.lower().replace("be ", "").strip()
-        instruction = f"Sua tarefa é gerar a conjugação completa do adjetivo '{adj}' associado ao verbo 'to be' (ou seja, a expressão 'be {adj}') para a pessoa gramatical '{person}' em todos os 12 tempos verbais em inglês. Ex: 'I am {adj}', 'He was {adj}', 'I will be {adj}'."
+        instruction = f"Sua tarefa é gerar a conjugação completa do adjetivo '{adj}' associado ao verbo 'to be' (ou seja, a expressão 'be {adj}') para a pessoa gramatical '{person}' nos seguintes tempos verbais em inglês: {tenses_str}."
     elif study_type == "Verbo + Adjetivo":
-        instruction = f"Sua tarefa é gerar a conjugação completa da expressão de verbo + adjetivo '{word}' (ex: 'get tired', 'feel happy', 'look beautiful') para a pessoa gramatical '{person}' em todos os 12 tempos verbais em inglês."
+        instruction = f"Sua tarefa é gerar a conjugação completa da expressão de verbo + adjetivo '{word}' para a pessoa gramatical '{person}' nos seguintes tempos verbais em inglês: {tenses_str}."
     elif study_type == "Substantivo":
-        instruction = f"Sua tarefa é escolher um verbo de ação muito comum e natural que combine com o substantivo '{word}' (ex: se for 'car', use 'drive a car' ou 'have a car'; se for 'apple', use 'eat an apple') e gerar a conjugação completa dessa expressão para a pessoa gramatical '{person}' em todos os 12 tempos verbais em inglês."
+        instruction = f"Sua tarefa é escolher um verbo de ação muito comum e natural que combine com o substantivo '{word}' (ex: se for 'car', use 'drive a car') e gerar a conjugação completa dessa expressão para a pessoa gramatical '{person}' nos seguintes tempos verbais em inglês: {tenses_str}."
     else:  # Verbo
-        instruction = f"Sua tarefa é gerar a conjugação completa do verbo '{word}' para a pessoa gramatical '{person}' em todos os 12 tempos verbais em inglês."
+        instruction = f"Sua tarefa é gerar a conjugação completa do verbo '{word}' para a pessoa gramatical '{person}' nos seguintes tempos verbais em inglês: {tenses_str}."
 
     system_prompt = f"""
     Você é um especialista em gramática da língua inglesa.
     {instruction}
     
-    Os 12 tempos verbais obrigatórios são:
-    1. Present Simple
-    2. Present Continuous
-    3. Present Perfect
-    4. Present Perfect Continuous
-    5. Past Simple
-    6. Past Continuous
-    7. Past Perfect
-    8. Past Perfect Continuous
-    9. Future Simple
-    10. Future Continuous
-    11. Future Perfect
-    12. Future Perfect Continuous
+    Os tempos verbais obrigatórios a serem gerados são exatamente: {tenses_str}.
     
-    Para cada um dos 12 tempos verbais, você deve fornecer as seguintes 4 formas:
+    Para cada um dos tempos verbais fornecidos, você deve fornecer as seguintes 4 formas:
     - Affirmative: A frase afirmativa conjugada usando a pessoa "{person}".
     - Affirmative Translation: A tradução correspondente da frase afirmativa para o português.
     - Question: A frase na forma interrogativa correspondente.
@@ -568,7 +583,7 @@ def generate_conjugations_api(word, person, study_type):
       "person": "{person}",
       "tenses": [
         {{
-          "tense": "Nome do tempo verbal em inglês (ex: Present Simple)",
+          "tense": "Nome do tempo verbal (ex: Present Simple)",
           "affirmative_text": "Frase afirmativa em inglês",
           "affirmative_translation": "Tradução da frase afirmativa em português",
           "question_text": "Frase interrogativa em inglês",
@@ -581,8 +596,7 @@ def generate_conjugations_api(word, person, study_type):
       ]
     }}
     """
-    
-    user_prompt = f"Gere a tabela de conjugação para '{word}' e a pessoa '{person}' usando o tipo '{study_type}'."
+    user_prompt = f"Gere a tabela de conjugação para '{word}' e a pessoa '{person}' usando o tipo '{study_type}' para os tempos verbais: {tenses_str}."
     
     model = genai.GenerativeModel(
         model_name='gemini-2.5-flash',
@@ -607,31 +621,31 @@ def handle_api_error(e):
     if "API_KEY_MISSING" in error_msg:
         st.markdown("""
         <div class="card-incorrect" style="background-color: #fffbeb; border-color: #fef3c7; border-left-color: #d97706; color: #b45309;">
-            <h4 style="margin:0; font-family:'Outfit';">🔑 API Key do Gemini Não Detectada</h4>
+            <h4 style="margin:0; font-family:'Outfit';">\U0001f511 API Key do Gemini Não Detectada</h4>
             <p style="margin-top:0.5rem; margin-bottom:0.5rem;">
                 Não conseguimos detectar nenhuma chave de API válida nas configurações do seu sistema ou do seu projeto.
             </p>
             <p style="margin:0; font-size: 0.9rem; font-weight: 600;">
-                👉 Por favor, insira sua API Key no campo "API Key do Gemini" no menu lateral para liberar as consultas!
+                \U0001f449 Por favor, insira sua API Key no campo "API Key do Gemini" no menu lateral para liberar as consultas!
             </p>
         </div>
         """, unsafe_allow_html=True)
     elif "429" in error_msg or "quota" in error_msg.lower() or "limit" in error_msg.lower():
         st.markdown("""
         <div class="card-incorrect" style="background-color: #fffbeb; border-color: #fef3c7; border-left-color: #d97706; color: #b45309;">
-            <h4 style="margin:0; font-family:'Outfit';">⚠️ Limite de Requisições da API Excedido</h4>
+            <h4 style="margin:0; font-family:'Outfit';">\u26a0\ufe0f Limite de Requisições da API Excedido</h4>
             <p style="margin-top:0.5rem; margin-bottom:0.5rem;">
                 Você atingiu o limite de cota da versão gratuita do Gemini (geralmente limitado a 15 requisições por minuto).
             </p>
             <p style="margin:0; font-size: 0.9rem; font-weight: 600;">
-                ⏱️ Por favor, aguarde cerca de 30 a 60 segundos antes de tentar novamente para que o Google libere seu acesso!
+                \u23f1\ufe0f Por favor, aguarde cerca de 30 a 60 segundos antes de tentar novamente para que o Google libere seu acesso!
             </p>
         </div>
         """, unsafe_allow_html=True)
     elif "404" in error_msg:
-        st.error("💥 Erro 404: O modelo especificado não foi encontrado nos servidores da API do Gemini.")
+        st.error("\U0001f4a5 Erro 404: O modelo especificado não foi encontrado nos servidores da API do Gemini.")
     else:
-        st.error(f"💥 Ocorreu um erro inesperado na requisição: {error_msg}")
+        st.error(f"\U0001f4a5 Ocorreu um erro inesperado na requisição: {error_msg}")
 
 # ------------------------------------------------------------------------------
 # SIDEBAR - MENU DE NAVEGAÇÃO E GUIA
@@ -1031,6 +1045,8 @@ else:
         st.session_state.active_person = ""
     if 'study_type' not in st.session_state:
         st.session_state.study_type = "Verbo"
+    if 'ai_word_suggestions' not in st.session_state:
+        st.session_state.ai_word_suggestions = None
         
     # Inicialização do Quiz no session_state
     if 'quiz_score' not in st.session_state:
@@ -1127,7 +1143,7 @@ else:
             st.error(st.session_state.translate_error)
             st.session_state.translate_error = None
             
-        col_word, col_type, col_person = st.columns(3)
+        col_word, col_type, col_tense, col_person = st.columns(4)
         
         with col_word:
             if "selected_verb" not in st.session_state:
@@ -1164,6 +1180,20 @@ else:
                 on_change=sync_study_type,
                 help="Escolha o tipo de treino desejado para o termo fornecido."
             )
+
+        with col_tense:
+            tense_types_list = [
+                "Todos", "Present Simple", "Present Continuous", "Present Perfect", "Present Perfect Continuous",
+                "Past Simple", "Past Continuous", "Past Perfect", "Past Perfect Continuous",
+                "Future Simple", "Future Continuous", "Future Perfect", "Future Perfect Continuous"
+            ]
+            tense_selected = st.selectbox(
+                "Tempo Verbal:",
+                tense_types_list,
+                index=0,
+                key="tense_select_field",
+                help="Escolha se deseja gerar/ver todos os tempos verbais ou apenas um tempo específico."
+            )
             
         with col_person:
             person = st.selectbox(
@@ -1184,7 +1214,8 @@ else:
                 st.button("Traduzir para Inglês 🔄", use_container_width=True, on_click=callback_translate_word)
                             
         with col_help2:
-            with st.expander("📚 Listas de Palavras Comuns"):
+            tab_static, tab_ai = st.tabs(["📚 Listas Estáticas", "🧠 Buscar na IA"])
+            with tab_static:
                 word_category = st.radio("Categoria:", ["Verbos", "Adjetivos", "Substantivos"], horizontal=True, key="common_words_category")
                 if word_category == "Verbos":
                     common_verbs = [
@@ -1223,6 +1254,56 @@ else:
                         key="common_nouns_select",
                         on_change=callback_select_common_noun
                     )
+            with tab_ai:
+                pt_search = st.text_input("Buscar exemplos na IA (ex: adjetivos de sentimentos, feliz, comer):", key="pt_word_finder_input")
+                search_clicked = st.button("Buscar Exemplos 🧠🔍", use_container_width=True)
+                
+                if search_clicked and pt_search.strip():
+                    with st.spinner("🧠 O Gemini está gerando sugestões de palavras..."):
+                        try:
+                            current_key = get_api_key()
+                            if not current_key:
+                                st.error("⚠️ Insira sua Gemini API Key na barra lateral primeiro!")
+                            else:
+                                import google.generativeai as genai
+                                genai.configure(api_key=current_key)
+                                prompt = f"""
+                                Com base na busca em português '{pt_search}', sugira uma lista de até 10 palavras ou expressões curtas em inglês ideais para treino de vocabulário e gramática.
+                                Identifique a categoria correta para cada uma: 'Verbo', 'Adjetivo (com 'to be')', ou 'Substantivo'.
+                                
+                                Retorne a resposta ESTREITAMENTE no formato JSON a seguir, sem markdown ou explicações:
+                                {{
+                                  "results": [
+                                    {{
+                                      "english": "palavra em inglês (ex: 'happy', 'run', 'car')",
+                                      "portuguese": "tradução em português (ex: 'feliz', 'correr', 'carro')",
+                                      "type": "Um dos valores exatos: 'Verbo', 'Adjetivo (com 'to be')', ou 'Substantivo'"
+                                    }}
+                                  ]
+                                }}
+                                """
+                                model = genai.GenerativeModel('gemini-2.5-flash', generation_config={"response_mime_type": "application/json"})
+                                response = model.generate_content(prompt)
+                                suggestions_data = json.loads(response.text.strip())
+                                st.session_state.ai_word_suggestions = suggestions_data.get("results", [])
+                        except Exception as e:
+                            st.error(f"Erro na busca: {e}")
+                            
+                if "ai_word_suggestions" in st.session_state and st.session_state.ai_word_suggestions:
+                    st.markdown("<div style='font-size:0.85rem; color:#6b7280; margin-bottom:0.5rem;'>Clique em uma palavra para carregar no estudo:</div>", unsafe_allow_html=True)
+                    for idx, item in enumerate(st.session_state.ai_word_suggestions):
+                        en_word = item["english"]
+                        pt_word = item["portuguese"]
+                        w_type = item["type"]
+                        btn_label = f"💡 {en_word} ({pt_word}) - {w_type}"
+                        
+                        def select_ai_word(word=en_word, study_type=w_type):
+                            st.session_state.selected_verb = word
+                            st.session_state.verb_input_widget = word
+                            st.session_state.study_type = study_type
+                            st.session_state.study_type_select = study_type
+                            
+                        st.button(btn_label, key=f"ai_sug_{idx}_{en_word}", use_container_width=True, on_click=select_ai_word)
                     
         generate_clicked = st.button("📊 Gerar / Buscar Conjugações", use_container_width=True)
         
@@ -1234,6 +1315,17 @@ else:
                 st.warning("⚠️ Por favor, digite um termo válido.")
             else:
                 verb_clean = verb.lower().strip()
+                
+                # Definir tempos verbais a buscar
+                tenses_list_all = [
+                    "Present Simple", "Present Continuous", "Present Perfect", "Present Perfect Continuous",
+                    "Past Simple", "Past Continuous", "Past Perfect", "Past Perfect Continuous",
+                    "Future Simple", "Future Continuous", "Future Perfect", "Future Perfect Continuous"
+                ]
+                if st.session_state.get("tense_select_field", "Todos") == "Todos":
+                    target_tenses = tenses_list_all
+                else:
+                    target_tenses = [st.session_state.tense_select_field]
                 
                 with st.spinner(f"🧠 Buscando conjugações de '{verb_clean}' para '{person}'..."):
                     try:
@@ -1247,11 +1339,11 @@ else:
                         else:
                             target_persons = [person]
                             
-                        # Verificar cache para cada pessoa
+                        # Verificar cache para cada pessoa e cada tempo verbal
                         missing_persons = []
                         if resolved_verb:
                             for p in target_persons:
-                                p_cached = get_cached_conjugations(resolved_verb, p)
+                                p_cached = get_cached_conjugations_for_tenses(resolved_verb, p, target_tenses)
                                 if p_cached:
                                     tenses_data[p] = p_cached
                                 else:
@@ -1265,27 +1357,38 @@ else:
                             if len(missing_persons) == 1:
                                 # Apenas 1 pessoa: usar API simples existente
                                 single_p = missing_persons[0]
-                                raw_response = generate_conjugations_api(verb_clean, single_p, st.session_state.study_type)
+                                raw_response = generate_conjugations_api(verb_clean, single_p, st.session_state.study_type, target_tenses)
                                 response_data = json.loads(raw_response)
                                 
-                                if validate_conjugation_json(response_data):
+                                if validate_conjugation_json(response_data, target_tenses):
                                     resolved_verb_from_api = response_data.get("verb", verb_clean).lower().strip()
                                     save_conjugations(resolved_verb_from_api, single_p, response_data["tenses"])
-                                    tenses_data[single_p] = response_data["tenses"]
+                                    
+                                    # Para preencher tenses_data, buscamos novamente do banco (para garantir que inclua tenses antigas que já estavam no cache)
+                                    cached_all_target = get_cached_conjugations_for_tenses(resolved_verb_from_api, single_p, target_tenses)
+                                    if cached_all_target:
+                                        tenses_data[single_p] = cached_all_target
+                                    else:
+                                        tenses_data[single_p] = response_data["tenses"]
                                     verb_clean = resolved_verb_from_api
                                 else:
                                     st.error(f"❌ O Gemini retornou uma resposta inválida para a pessoa '{single_p}'.")
                             else:
                                 # Múltiplas pessoas: usar a nova API em lote
-                                raw_response = generate_multiple_conjugations_api(verb_clean, missing_persons, st.session_state.study_type)
+                                raw_response = generate_multiple_conjugations_api(verb_clean, missing_persons, st.session_state.study_type, target_tenses)
                                 response_data = json.loads(raw_response)
                                 
-                                if validate_multiple_conjugations_json(response_data, missing_persons):
+                                if validate_multiple_conjugations_json(response_data, missing_persons, target_tenses):
                                     resolved_verb_from_api = response_data.get("verb", verb_clean).lower().strip()
                                     for p in missing_persons:
                                         p_tenses = response_data["results"][p]
                                         save_conjugations(resolved_verb_from_api, p, p_tenses)
-                                        tenses_data[p] = p_tenses
+                                        
+                                        cached_all_target = get_cached_conjugations_for_tenses(resolved_verb_from_api, p, target_tenses)
+                                        if cached_all_target:
+                                            tenses_data[p] = cached_all_target
+                                        else:
+                                            tenses_data[p] = p_tenses
                                     verb_clean = resolved_verb_from_api
                                 else:
                                     st.error("❌ O Gemini retornou uma resposta inválida para o lote de pessoas.")
@@ -1430,13 +1533,77 @@ else:
                                     st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
 
             if active_p == "Todas as pessoas" and isinstance(active_conjs, dict):
+                first_person = list(active_conjs.keys())[0]
+                available_tenses = [t["tense"] for t in active_conjs[first_person]]
+                
                 st.markdown(f"### 📋 Conjugações de **{active_v.capitalize()}** (Todas as Pessoas)")
-                pronouns_list = ["I", "You", "He", "She", "It", "We", "You (plural)", "They"]
-                available_pronouns = [p for p in pronouns_list if p in active_conjs]
-                tabs = st.tabs(available_pronouns)
-                for idx, pronoun in enumerate(available_pronouns):
-                    with tabs[idx]:
-                        render_conjugation_tenses(active_v, pronoun, active_conjs[pronoun], study_mode)
+                
+                for tense_name in available_tenses:
+                    reveal_key = f"reveal_{active_v}_all_{tense_name}"
+                    if reveal_key not in st.session_state:
+                        st.session_state[reveal_key] = False
+                        
+                    with st.expander(f"📌 {tense_name}"):
+                        if study_mode and not st.session_state[reveal_key]:
+                            st.markdown("<div style='text-align: center; padding: 0.5rem;'>", unsafe_allow_html=True)
+                            st.write("🙈 *Conteúdo ocultado pelo Modo Estudo.*")
+                            if st.button("👁️ Mostrar resposta", key=f"btn_reveal_all_{tense_name}_{active_v}", use_container_width=True):
+                                st.session_state[reveal_key] = True
+                                st.rerun()
+                            st.markdown("</div>", unsafe_allow_html=True)
+                        else:
+                            if study_mode:
+                                if st.button("🙈 Ocultar resposta", key=f"btn_hide_all_{tense_name}_{active_v}", use_container_width=True):
+                                    st.session_state[reveal_key] = False
+                                    st.rerun()
+                                    
+                            show_translations = st.checkbox("👁️ Mostrar Traduções na Tabela", key=f"trans_chk_{active_v}_{tense_name}", value=True)
+                            
+                            html_table = f"""
+                            <table style="width:100%; border-collapse: collapse; margin-top: 10px;">
+                                <thead>
+                                    <tr style="background-color: #f1f5f9; border-bottom: 2px solid #e2e8f0; text-align: left;">
+                                        <th style="padding: 10px; font-weight: 700; color: #475569;">Pessoa</th>
+                                        <th style="padding: 10px; font-weight: 700; color: #15803d;">🟢 Afirmativa</th>
+                                        <th style="padding: 10px; font-weight: 700; color: #b91c1c;">🔴 Negativa</th>
+                                        <th style="padding: 10px; font-weight: 700; color: #1d4ed8;">❓ Pergunta</th>
+                                        <th style="padding: 10px; font-weight: 700; color: #6d28d9;">💡 Exemplo</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                            """
+                            
+                            pronouns_list = ["I", "You", "He", "She", "It", "We", "You (plural)", "They"]
+                            for p in pronouns_list:
+                                if p in active_conjs:
+                                    t_data = next((t for t in active_conjs[p] if t["tense"] == tense_name), None)
+                                    if t_data:
+                                        aff_txt = t_data["affirmative_text"]
+                                        neg_txt = t_data["negative_text"]
+                                        ques_txt = t_data["question_text"]
+                                        ex_txt = t_data["example_text"]
+                                        
+                                        if show_translations:
+                                            aff_txt += f'<br><span style="font-size:0.85rem; color:#64748b; font-style:italic;">{t_data["affirmative_translation"]}</span>'
+                                            neg_txt += f'<br><span style="font-size:0.85rem; color:#64748b; font-style:italic;">{t_data["negative_translation"]}</span>'
+                                            ques_txt += f'<br><span style="font-size:0.85rem; color:#64748b; font-style:italic;">{t_data["question_translation"]}</span>'
+                                            ex_txt += f'<br><span style="font-size:0.85rem; color:#64748b; font-style:italic;">{t_data["example_translation"]}</span>'
+                                            
+                                        html_table += f"""
+                                        <tr style="border-bottom: 1px solid #f1f5f9; vertical-align: top;">
+                                            <td style="padding: 10px; font-weight: 600; color: #475569;">{p}</td>
+                                            <td style="padding: 10px; color: #1e293b;">{aff_txt}</td>
+                                            <td style="padding: 10px; color: #1e293b;">{neg_txt}</td>
+                                            <td style="padding: 10px; color: #1e293b;">{ques_txt}</td>
+                                            <td style="padding: 10px; color: #1e293b;">{ex_txt}</td>
+                                        </tr>
+                                        """
+                                        
+                            html_table += """
+                                </tbody>
+                            </table>
+                            """
+                            st.markdown(html_table, unsafe_allow_html=True)
             else:
                 st.markdown(f"### 📋 Conjugação de **{active_v.capitalize()}** para **{active_p}**")
                 tenses = list(active_conjs.values())[0] if isinstance(active_conjs, dict) else active_conjs
