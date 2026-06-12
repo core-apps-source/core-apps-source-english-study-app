@@ -524,7 +524,7 @@ def generate_multiple_conjugations_api(word, persons, study_type, target_tenses)
     user_prompt = f"Gere conjugações de '{word}' para as pessoas: {', '.join(persons)} usando o tipo '{study_type}' para os tempos verbais: {tenses_str}."
     
     model = genai.GenerativeModel(
-        model_name='gemini-3.5-flash',
+        model_name='gemini-2.5-flash',
         system_instruction=system_prompt,
         generation_config={
             "response_mime_type": "application/json",
@@ -599,7 +599,7 @@ def generate_conjugations_api(word, person, study_type, target_tenses):
     user_prompt = f"Gere a tabela de conjugação para '{word}' e a pessoa '{person}' usando o tipo '{study_type}' para os tempos verbais: {tenses_str}."
     
     model = genai.GenerativeModel(
-        model_name='gemini-3.5-flash',
+        model_name='gemini-2.5-flash',
         system_instruction=system_prompt,
         generation_config={
             "response_mime_type": "application/json",
@@ -790,7 +790,7 @@ def analyze_sentence(user_sentence, user_doubt):
         user_prompt += f"\nDúvida/Pesquisa enviada pelo usuário (em português): '{user_doubt.strip()}'"
         
     model = genai.GenerativeModel(
-        model_name='gemini-3.5-flash',
+        model_name='gemini-2.5-flash',
         system_instruction=system_prompt,
         generation_config={
             "response_mime_type": "application/json",
@@ -840,7 +840,7 @@ def generate_phrases_api(words_list):
     user_prompt = f"Gere frases em inglês misturando as seguintes palavras do usuário: '{words_list}'"
     
     model = genai.GenerativeModel(
-        model_name='gemini-3.5-flash',
+        model_name='gemini-2.5-flash',
         system_instruction=system_prompt,
         generation_config={
             "response_mime_type": "application/json",
@@ -1095,7 +1095,7 @@ else:
                         }}
                         """
                         
-                        model = genai.GenerativeModel('gemini-3.5-flash', generation_config={"response_mime_type": "application/json"})
+                        model = genai.GenerativeModel('gemini-2.5-flash', generation_config={"response_mime_type": "application/json"})
                         response = model.generate_content(prompt)
                         res_data = json.loads(response.text.strip())
                         
@@ -1297,7 +1297,7 @@ else:
                                   ]
                                 }}
                                 """
-                                model = genai.GenerativeModel('gemini-3.5-flash', generation_config={"response_mime_type": "application/json"})
+                                model = genai.GenerativeModel('gemini-2.5-flash', generation_config={"response_mime_type": "application/json"})
                                 response = model.generate_content(prompt)
                                 suggestions_data = json.loads(response.text.strip())
                                 st.session_state.ai_word_suggestions = suggestions_data.get("results", [])
