@@ -4,6 +4,9 @@ import json
 import sqlite3
 import random
 import re
+import time
+import hashlib
+from datetime import datetime, date
 import streamlit as st
 import google.generativeai as genai
 
@@ -175,13 +178,80 @@ def get_api_key():
     return None
 
 api_key = get_api_key()
-if api_key:
+if api_key and os.environ.get("DEV_MODE", "False").strip().lower() not in ("1", "true", "yes", "on"):
     genai.configure(api_key=api_key)
 
 # ------------------------------------------------------------------------------
 # BANCO DE DADOS E HISTÓRICO DE VERBOS (SQLite)
 # ------------------------------------------------------------------------------
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "verbs.db")
+
+DEFAULT_DEV_MODE = os.environ.get("DEV_MODE", "False").strip().lower() in ("1", "true", "yes", "on")
+MAX_RETRIES_429 = int(os.environ.get("GEMINI_MAX_RETRIES_429", "2"))
+RETRY_BASE_SECONDS = float(os.environ.get("GEMINI_RETRY_BASE_SECONDS", "8"))
+
+def is_dev_mode():
+    return bool(st.session_state.get("dev_mode_enabled", DEFAULT_DEV_MODE))
+
+def init_monitoring_state():
+    defaults = {
+        "gemini_session_calls": 0,
+        "gemini_session_cache_hits": 0,
+        "gemini_session_dev_responses": 0,
+        "gemini_session_history": [],
+        "gemini_last_errors": [],
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+def now_iso():
+    return datetime.now().isoformat(timespec="seconds")
+
+def make_cache_key(function_name, model_name, prompt, system_instruction=None, generation_config=None):
+    payload = json.dumps({
+        "function": function_name,
+        "model": model_name,
+        "prompt": prompt,
+        "system_instruction": system_instruction or "",
+        "generation_config": generation_config or {},
+    }, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+def estimate_prompt_tokens(text):
+    if not text:
+        return 0
+    return max(1, len(str(text)) // 4)
+
+def extract_usage_metadata(response):
+    usage = getattr(response, "usage_metadata", None)
+    if not usage:
+        return {}
+    return {
+        "prompt_token_count": getattr(usage, "prompt_token_count", None),
+        "candidates_token_count": getattr(usage, "candidates_token_count", None),
+        "total_token_count": getattr(usage, "total_token_count", None),
+    }
+
+def append_session_history(event):
+    st.session_state.gemini_session_history.insert(0, event)
+    st.session_state.gemini_session_history = st.session_state.gemini_session_history[:50]
+
+def record_last_error(function_name, error_message):
+    error_event = {"time": now_iso(), "function": function_name, "error": str(error_message)}
+    st.session_state.gemini_last_errors.insert(0, error_event)
+    st.session_state.gemini_last_errors = st.session_state.gemini_last_errors[:10]
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO gemini_error_logs (created_at, function_name, error_message) VALUES (?, ?, ?)",
+            (error_event["time"], function_name, str(error_message)),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -213,11 +283,256 @@ def init_db():
         CREATE UNIQUE INDEX IF NOT EXISTS idx_verb_person_tense 
         ON conjugations (verb, person, tense)
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS gemini_cache (
+            cache_key TEXT PRIMARY KEY,
+            function_name TEXT,
+            prompt TEXT,
+            response_text TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            hit_count INTEGER DEFAULT 0
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS gemini_call_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT,
+            function_name TEXT,
+            model_name TEXT,
+            prompt TEXT,
+            response_time_ms INTEGER,
+            prompt_token_count INTEGER,
+            candidates_token_count INTEGER,
+            total_token_count INTEGER,
+            cache_hit INTEGER DEFAULT 0,
+            dev_mode INTEGER DEFAULT 0,
+            error TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS gemini_error_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT,
+            function_name TEXT,
+            error_message TEXT
+        )
+    """)
     conn.commit()
     conn.close()
 
 # Inicializa o banco de dados
 init_db()
+init_monitoring_state()
+
+def get_cached_gemini_response(cache_key):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT response_text FROM gemini_cache WHERE cache_key = ?", (cache_key,))
+    row = cursor.fetchone()
+    if row:
+        cursor.execute(
+            "UPDATE gemini_cache SET hit_count = hit_count + 1, last_used_at = CURRENT_TIMESTAMP WHERE cache_key = ?",
+            (cache_key,),
+        )
+        conn.commit()
+    conn.close()
+    return row["response_text"] if row else None
+
+def save_gemini_cache(cache_key, function_name, prompt, response_text):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT OR REPLACE INTO gemini_cache
+            (cache_key, function_name, prompt, response_text, created_at, last_used_at, hit_count)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, COALESCE((SELECT hit_count FROM gemini_cache WHERE cache_key = ?), 0))
+    """, (cache_key, function_name, prompt, response_text, cache_key))
+    conn.commit()
+    conn.close()
+
+def log_gemini_event(function_name, model_name, prompt, response_time_ms=0, usage=None, cache_hit=False, dev_mode=False, error=None):
+    usage = usage or {}
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO gemini_call_logs (
+            created_at, function_name, model_name, prompt, response_time_ms,
+            prompt_token_count, candidates_token_count, total_token_count,
+            cache_hit, dev_mode, error
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        now_iso(),
+        function_name,
+        model_name,
+        prompt,
+        int(response_time_ms or 0),
+        usage.get("prompt_token_count"),
+        usage.get("candidates_token_count"),
+        usage.get("total_token_count"),
+        1 if cache_hit else 0,
+        1 if dev_mode else 0,
+        str(error) if error else None,
+    ))
+    conn.commit()
+    conn.close()
+
+def get_monitoring_summary():
+    today = date.today().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) AS total FROM gemini_call_logs WHERE cache_hit = 0 AND dev_mode = 0 AND error IS NULL")
+    total_real_calls = cursor.fetchone()["total"]
+    cursor.execute("SELECT COUNT(*) AS total FROM gemini_call_logs WHERE substr(created_at, 1, 10) = ? AND cache_hit = 0 AND dev_mode = 0 AND error IS NULL", (today,))
+    daily_real_calls = cursor.fetchone()["total"]
+    cursor.execute("SELECT COUNT(*) AS total FROM gemini_call_logs WHERE cache_hit = 1")
+    cache_hits = cursor.fetchone()["total"]
+    cursor.execute("SELECT COUNT(*) AS total FROM gemini_call_logs WHERE dev_mode = 1")
+    dev_responses = cursor.fetchone()["total"]
+    cursor.execute("SELECT COALESCE(SUM(hit_count), 0) AS total FROM gemini_cache")
+    stored_cache_hits = cursor.fetchone()["total"]
+    cursor.execute("SELECT created_at, function_name, error_message FROM gemini_error_logs ORDER BY id DESC LIMIT 5")
+    errors = [dict(row) for row in cursor.fetchall()]
+    cursor.execute("""
+        SELECT created_at, function_name, cache_hit, dev_mode, response_time_ms, total_token_count
+        FROM gemini_call_logs
+        ORDER BY id DESC
+        LIMIT 10
+    """)
+    recent = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return {
+        "total_real_calls": total_real_calls,
+        "daily_real_calls": daily_real_calls,
+        "cache_hits": cache_hits + stored_cache_hits,
+        "dev_responses": dev_responses,
+        "errors": errors,
+        "recent": recent,
+    }
+
+def mock_tenses(person):
+    all_tenses = [
+        "Present Simple", "Present Continuous", "Present Perfect", "Present Perfect Continuous",
+        "Past Simple", "Past Continuous", "Past Perfect", "Past Perfect Continuous",
+        "Future Simple", "Future Continuous", "Future Perfect", "Future Perfect Continuous"
+    ]
+    return [{
+        "tense": tense,
+        "affirmative_text": f"{person} practices English. ({tense})",
+        "affirmative_translation": f"{person} pratica inglês. ({tense})",
+        "question_text": f"Does {person.lower()} practice English? ({tense})",
+        "question_translation": f"{person} pratica inglês? ({tense})",
+        "negative_text": f"{person} does not practice English. ({tense})",
+        "negative_translation": f"{person} não pratica inglês. ({tense})",
+        "example_text": f"{person} practices every day. ({tense})",
+        "example_translation": f"{person} pratica todos os dias. ({tense})"
+    } for tense in all_tenses]
+
+def mock_gemini_response(function_name, prompt):
+    if function_name == "analyze_sentence":
+        return json.dumps({
+            "is_correct": True,
+            "translation": "Tradução simulada em DEV_MODE.",
+            "corrected_sentence": None,
+            "explanation": "Resposta simulada: a frase parece adequada para testes da interface.",
+            "doubt_explanation": "Explicação simulada em DEV_MODE para validar o fluxo sem consumir Gemini.",
+            "alternative_suggestions": ["Simulated alternative one.", "Simulated alternative two."]
+        }, ensure_ascii=False)
+    if function_name == "generate_phrases_api":
+        return json.dumps({"results": [
+            {"sentence": "I practice English with these words.", "translation": "Eu pratico inglês com estas palavras."},
+            {"sentence": "These words can make a simple sentence.", "translation": "Estas palavras podem formar uma frase simples."},
+            {"sentence": "Practice makes English feel natural.", "translation": "A prática faz o inglês parecer natural."}
+        ]}, ensure_ascii=False)
+    if function_name == "translate_word":
+        return json.dumps({
+            "translation": "practice",
+            "type": "Verbo",
+            "explanation": "Resposta simulada em DEV_MODE."
+        }, ensure_ascii=False)
+    if function_name == "suggest_words":
+        return json.dumps({"results": [
+            {"english": "study", "portuguese": "estudar", "type": "Verbo"},
+            {"english": "happy", "portuguese": "feliz", "type": "Adjetivo (com 'to be')"},
+            {"english": "book", "portuguese": "livro", "type": "Substantivo"}
+        ]}, ensure_ascii=False)
+    if function_name == "generate_multiple_conjugations_api":
+        persons = ["I", "You", "He", "She", "It", "We", "You (plural)", "They"]
+        return json.dumps({"verb": "practice", "results": {p: mock_tenses(p) for p in persons}}, ensure_ascii=False)
+    return json.dumps({"verb": "practice", "person": "He", "tenses": mock_tenses("He")}, ensure_ascii=False)
+
+def is_rate_limit_error(error):
+    msg = str(error).lower()
+    return "429" in msg or "quota" in msg or "rate" in msg or "limit" in msg or "resource_exhausted" in msg
+
+def estimate_wait_seconds(attempt):
+    return int(RETRY_BASE_SECONDS * (2 ** attempt))
+
+def gemini_generate(function_name, prompt, system_instruction=None, generation_config=None, model_name="gemini-2.5-flash", cache_enabled=True):
+    generation_config = generation_config or {}
+    cache_key = make_cache_key(function_name, model_name, prompt, system_instruction, generation_config)
+    if cache_enabled:
+        cached = get_cached_gemini_response(cache_key)
+        if cached is not None:
+            st.session_state.gemini_session_cache_hits += 1
+            append_session_history({"time": now_iso(), "function": function_name, "cache_hit": True, "dev_mode": False})
+            log_gemini_event(function_name, model_name, prompt, usage={"prompt_token_count": estimate_prompt_tokens(prompt)}, cache_hit=True)
+            return cached
+
+    if is_dev_mode():
+        response_text = mock_gemini_response(function_name, prompt)
+        st.session_state.gemini_session_dev_responses += 1
+        append_session_history({"time": now_iso(), "function": function_name, "cache_hit": False, "dev_mode": True})
+        log_gemini_event(function_name, model_name, prompt, usage={"prompt_token_count": estimate_prompt_tokens(prompt)}, dev_mode=True)
+        if cache_enabled:
+            save_gemini_cache(cache_key, function_name, prompt, response_text)
+        return response_text
+
+    current_key = get_api_key()
+    if not current_key:
+        raise ValueError("API_KEY_MISSING")
+    genai.configure(api_key=current_key)
+
+    last_error = None
+    for attempt in range(MAX_RETRIES_429 + 1):
+        started = time.perf_counter()
+        try:
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                system_instruction=system_instruction,
+                generation_config=generation_config,
+            )
+            response = model.generate_content(prompt)
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            response_text = response.text
+            usage = extract_usage_metadata(response)
+            st.session_state.gemini_session_calls += 1
+            append_session_history({
+                "time": now_iso(),
+                "function": function_name,
+                "cache_hit": False,
+                "dev_mode": False,
+                "response_time_ms": elapsed_ms,
+                "tokens": usage.get("total_token_count"),
+            })
+            log_gemini_event(function_name, model_name, prompt, elapsed_ms, usage=usage)
+            if cache_enabled:
+                save_gemini_cache(cache_key, function_name, prompt, response_text)
+            return response_text
+        except Exception as e:
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            last_error = e
+            log_gemini_event(function_name, model_name, prompt, elapsed_ms, error=e)
+            if is_rate_limit_error(e) and attempt < MAX_RETRIES_429:
+                wait_seconds = estimate_wait_seconds(attempt)
+                st.warning(f"Limite 429 detectado. Nova tentativa automática em aproximadamente {wait_seconds} segundos.")
+                time.sleep(wait_seconds)
+                continue
+            record_last_error(function_name, e)
+            raise
+    raise last_error
 
 def get_cached_conjugations(verb, person):
     verb = verb.lower().strip()
@@ -459,11 +774,6 @@ def validate_multiple_conjugations_json(data, persons, expected_tenses=None):
     return True
 
 def generate_multiple_conjugations_api(word, persons, study_type, target_tenses):
-    current_key = get_api_key()
-    if not current_key:
-        raise ValueError("API_KEY_MISSING")
-    genai.configure(api_key=current_key)
-    
     tenses_str = ", ".join(target_tenses)
     
     # Customizar instruções com base no tipo de estudo
@@ -523,24 +833,17 @@ def generate_multiple_conjugations_api(word, persons, study_type, target_tenses)
     
     user_prompt = f"Gere conjugações de '{word}' para as pessoas: {', '.join(persons)} usando o tipo '{study_type}' para os tempos verbais: {tenses_str}."
     
-    model = genai.GenerativeModel(
-        model_name='gemini-2.5-flash',
+    return gemini_generate(
+        "generate_multiple_conjugations_api",
+        user_prompt,
         system_instruction=system_prompt,
         generation_config={
             "response_mime_type": "application/json",
             "temperature": 0.15,
-        }
+        },
     )
-    
-    response = model.generate_content(user_prompt)
-    return response.text
 
 def generate_conjugations_api(word, person, study_type, target_tenses):
-    current_key = get_api_key()
-    if not current_key:
-        raise ValueError("API_KEY_MISSING")
-    genai.configure(api_key=current_key)
-    
     tenses_str = ", ".join(target_tenses)
     
     # Customizar instruções com base no tipo de estudo
@@ -598,17 +901,15 @@ def generate_conjugations_api(word, person, study_type, target_tenses):
     """
     user_prompt = f"Gere a tabela de conjugação para '{word}' e a pessoa '{person}' usando o tipo '{study_type}' para os tempos verbais: {tenses_str}."
     
-    model = genai.GenerativeModel(
-        model_name='gemini-2.5-flash',
+    return gemini_generate(
+        "generate_conjugations_api",
+        user_prompt,
         system_instruction=system_prompt,
         generation_config={
             "response_mime_type": "application/json",
             "temperature": 0.15,
-        }
+        },
     )
-    
-    response = model.generate_content(user_prompt)
-    return response.text
 
 # ------------------------------------------------------------------------------
 # EXCEÇÕES PERSONALIZADAS E TRATAMENTO DE ERROS (RATE LIMIT 429)
@@ -661,6 +962,16 @@ active_page = st.sidebar.radio(
     "Escolha a ferramenta:",
     ["📝 Praticar Escrita & Dúvidas", "⚡ Gerador de Frases Rígido", "📊 Estudo de Verbos"]
 )
+
+st.sidebar.markdown("---")
+
+st.session_state.dev_mode_enabled = st.sidebar.checkbox(
+    "DEV_MODE: bloquear chamadas Gemini",
+    value=is_dev_mode(),
+    help="Quando ativo, nenhuma chamada real ao Gemini ocorre; a app usa respostas simuladas e cache local."
+)
+if is_dev_mode():
+    st.sidebar.info("DEV_MODE ativo: testes ilimitados sem consumo da API Gemini.")
 
 st.sidebar.markdown("---")
 
@@ -734,6 +1045,26 @@ st.sidebar.markdown("""
 ⚠️ **Nota de Cota:** A API gratuita do Gemini possui um limite de requisições por minuto. Caso receba um alerta de limite, apenas aguarde 1 minuto para continuar praticando!
 """)
 
+with st.sidebar.expander("Painel administrativo Gemini", expanded=False):
+    summary = get_monitoring_summary()
+    st.metric("Chamadas reais na sess?o", st.session_state.gemini_session_calls)
+    st.metric("Chamadas reais hoje", summary["daily_real_calls"])
+    st.metric("Total real registrado", summary["total_real_calls"])
+    st.metric("Chamadas evitadas pelo cache", summary["cache_hits"])
+    st.metric("Respostas simuladas DEV_MODE", summary["dev_responses"] + st.session_state.gemini_session_dev_responses)
+    st.caption(f"Economia estimada: {summary['cache_hits']} chamadas Gemini evitadas.")
+    if st.session_state.gemini_session_history:
+        st.markdown("**Hist?rico da sess?o**")
+        for event in st.session_state.gemini_session_history[:5]:
+            label = "cache" if event.get("cache_hit") else "dev" if event.get("dev_mode") else "api"
+            st.caption(f"{event.get('time')} | {event.get('function')} | {label}")
+    if summary["errors"]:
+        st.markdown("**?ltimos erros**")
+        for error in summary["errors"]:
+            st.caption(f"{error['created_at']} | {error['function_name']}: {error['error_message'][:120]}")
+    else:
+        st.caption("Sem erros recentes registrados.")
+
 # ------------------------------------------------------------------------------
 # SISTEMA DE ESTADO DA SESSÃO (SESSION STATE)
 # ------------------------------------------------------------------------------
@@ -749,11 +1080,6 @@ def analyze_sentence(user_sentence, user_doubt):
     """
     Chama a API do Gemini para analisar a frase e responder à dúvida.
     """
-    current_key = get_api_key()
-    if not current_key:
-        raise ValueError("API_KEY_MISSING")
-    genai.configure(api_key=current_key)
-    
     system_prompt = """
     Você é um professor de inglês nativo e experiente. Seu papel é analisar criticamente e corrigir frases em inglês enviadas por estudantes brasileiros.
     
@@ -789,17 +1115,15 @@ def analyze_sentence(user_sentence, user_doubt):
     if user_doubt and user_doubt.strip() != "":
         user_prompt += f"\nDúvida/Pesquisa enviada pelo usuário (em português): '{user_doubt.strip()}'"
         
-    model = genai.GenerativeModel(
-        model_name='gemini-2.5-flash',
+    return gemini_generate(
+        "analyze_sentence",
+        user_prompt,
         system_instruction=system_prompt,
         generation_config={
             "response_mime_type": "application/json",
             "temperature": 0.2,
-        }
+        },
     )
-    
-    response = model.generate_content(user_prompt)
-    return response.text
 
 
 def generate_phrases_api(words_list):
@@ -807,11 +1131,6 @@ def generate_phrases_api(words_list):
     Chama a API do Gemini para misturar as palavras em sentenças em inglês sob restrição estrita,
     retornando também as traduções correspondentes.
     """
-    current_key = get_api_key()
-    if not current_key:
-        raise ValueError("API_KEY_MISSING")
-    genai.configure(api_key=current_key)
-    
     system_prompt = """
     Você é um gerador linguístico estrito e preciso de sentenças em inglês.
     Sua tarefa é ler uma lista de palavras fornecidas e gerar aleatoriamente entre 3 e 5 frases naturais em inglês misturando e usando essas palavras.
@@ -839,17 +1158,15 @@ def generate_phrases_api(words_list):
     
     user_prompt = f"Gere frases em inglês misturando as seguintes palavras do usuário: '{words_list}'"
     
-    model = genai.GenerativeModel(
-        model_name='gemini-2.5-flash',
+    return gemini_generate(
+        "generate_phrases_api",
+        user_prompt,
         system_instruction=system_prompt,
         generation_config={
             "response_mime_type": "application/json",
             "temperature": 0.85,
-        }
+        },
     )
-    
-    response = model.generate_content(user_prompt)
-    return response.text
 
 # ------------------------------------------------------------------------------
 # INTERFACE PRINCIPAL - PÁGINA 1: PRÁTICA DE ESCRITA & DÚVIDAS
@@ -1072,12 +1389,9 @@ else:
             if pt_val:
                 try:
                     current_key = get_api_key()
-                    if not current_key:
+                    if not current_key and not is_dev_mode():
                         st.session_state.translate_error = "⚠️ Insira sua Gemini API Key na barra lateral primeiro para habilitar a tradução!"
                     else:
-                        import google.generativeai as genai
-                        genai.configure(api_key=current_key)
-                        
                         prompt = f"""
                         Analise a palavra ou expressão em português '{pt_val}'.
                         1. Traduza-a para o inglês.
@@ -1095,9 +1409,12 @@ else:
                         }}
                         """
                         
-                        model = genai.GenerativeModel('gemini-2.5-flash', generation_config={"response_mime_type": "application/json"})
-                        response = model.generate_content(prompt)
-                        res_data = json.loads(response.text.strip())
+                        raw_response = gemini_generate(
+                            "translate_word",
+                            prompt,
+                            generation_config={"response_mime_type": "application/json"},
+                        )
+                        res_data = json.loads(raw_response.strip())
                         
                         en_word = res_data["translation"].strip().lower()
                         word_type = res_data["type"]
@@ -1277,11 +1594,9 @@ else:
                     with st.spinner("🧠 O Gemini está gerando sugestões de palavras..."):
                         try:
                             current_key = get_api_key()
-                            if not current_key:
+                            if not current_key and not is_dev_mode():
                                 st.error("⚠️ Insira sua Gemini API Key na barra lateral primeiro!")
                             else:
-                                import google.generativeai as genai
-                                genai.configure(api_key=current_key)
                                 prompt = f"""
                                 Com base na busca em português '{pt_search}', sugira uma lista de até 10 palavras ou expressões curtas em inglês ideais para treino de vocabulário e gramática.
                                 Identifique a categoria correta para cada uma: 'Verbo', 'Adjetivo (com 'to be')', ou 'Substantivo'.
@@ -1297,9 +1612,12 @@ else:
                                   ]
                                 }}
                                 """
-                                model = genai.GenerativeModel('gemini-2.5-flash', generation_config={"response_mime_type": "application/json"})
-                                response = model.generate_content(prompt)
-                                suggestions_data = json.loads(response.text.strip())
+                                raw_response = gemini_generate(
+                                    "suggest_words",
+                                    prompt,
+                                    generation_config={"response_mime_type": "application/json"},
+                                )
+                                suggestions_data = json.loads(raw_response.strip())
                                 st.session_state.ai_word_suggestions = suggestions_data.get("results", [])
                         except Exception as e:
                             st.error(f"Erro na busca: {e}")
@@ -1505,7 +1823,7 @@ else:
                                 st.warning("⚠️ Nenhuma forma selecionada para exibição.")
                             else:
                                 if len(active_cards) == 1:
-                                    cols = [st]
+                                    cols = [st.container()]
                                 else:
                                     cols = st.columns(2)
                                 
